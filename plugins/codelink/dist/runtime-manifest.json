@@ -2,6 +2,6 @@
   "schemaVersion": 1,
   "files": {
     "cli.cjs": "977029da5d521de26afe3b5c0367e8d7b339f5fa4eb5b5e70df8c2c702b1c33c",
-    "mcp.js": "8fbccfc920fb7f247280ced0d5a460889cf6116f68eec72098ceecd32c6ad5b2"
+    "mcp.js": "761b48d7a9ae734ebd120611c1dbbde43dd427a0db3c0ee97699e894ae1ffeed"
   }
 }

@@ -14,6 +14,31 @@ vi.mock("node:child_process", { spy: true });
 
 const cleanup: string[] = [];
 
+function writeFakeCodex(dir: string, source: string): string {
+  if (process.platform === "win32") {
+    const scriptName = "fake-codex.cjs";
+    fs.writeFileSync(path.join(dir, scriptName), source, "utf8");
+    const wrapper = path.join(dir, "codex.cmd");
+    fs.writeFileSync(
+      wrapper,
+      `@echo off\r\n"${process.execPath}" "%~dp0${scriptName}" %*\r\n`,
+      "utf8",
+    );
+    return wrapper;
+  }
+
+  const executable = path.join(dir, "codex");
+  fs.writeFileSync(executable, source, { mode: 0o700 });
+  return executable;
+}
+
+function writeFakeCodexCmd(dir: string, source: string): string {
+  if (process.platform === "win32") return writeFakeCodex(dir, source);
+  const wrapper = path.join(dir, "codex.cmd");
+  fs.writeFileSync(wrapper, source, { mode: 0o700 });
+  return wrapper;
+}
+
 afterEach(() => {
   for (const dir of cleanup.splice(0))
     fs.rmSync(dir, { recursive: true, force: true });
@@ -35,9 +60,8 @@ describe("StdioCodexAppServer", () => {
   it("uses thread/start and returns the completed final agent message", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "codelink-app-server-"));
     cleanup.push(dir);
-    const fakeCodex = path.join(dir, "codex");
-    fs.writeFileSync(
-      fakeCodex,
+    const fakeCodex = writeFakeCodex(
+      dir,
       `#!/usr/bin/env node
 const readline = require("node:readline");
 const rl = readline.createInterface({ input: process.stdin });
@@ -74,7 +98,6 @@ rl.on("line", (line) => {
   }
 });
 `,
-      { mode: 0o700 },
     );
 
     const client = new StdioCodexAppServer(fakeCodex);
@@ -99,9 +122,8 @@ rl.on("line", (line) => {
   it("resumes a stored thread and appends a new user turn", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "codelink-app-server-"));
     cleanup.push(dir);
-    const fakeCodex = path.join(dir, "codex");
-    fs.writeFileSync(
-      fakeCodex,
+    const fakeCodex = writeFakeCodex(
+      dir,
       `#!/usr/bin/env node
 const readline = require("node:readline");
 const rl = readline.createInterface({ input: process.stdin });
@@ -142,7 +164,6 @@ rl.on("line", (line) => {
   }
 });
 `,
-      { mode: 0o700 },
     );
 
     const client = new StdioCodexAppServer(fakeCodex);
@@ -169,9 +190,8 @@ rl.on("line", (line) => {
   it("steers the active turn when a WeChat reply arrives during a desktop task", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "codelink-app-server-"));
     cleanup.push(dir);
-    const fakeCodex = path.join(dir, "codex");
-    fs.writeFileSync(
-      fakeCodex,
+    const fakeCodex = writeFakeCodex(
+      dir,
       `#!/usr/bin/env node
 const readline = require("node:readline");
 const rl = readline.createInterface({ input: process.stdin });
@@ -206,7 +226,6 @@ rl.on("line", (line) => {
   }
 });
 `,
-      { mode: 0o700 },
     );
 
     const client = new StdioCodexAppServer(fakeCodex);
@@ -231,9 +250,8 @@ rl.on("line", (line) => {
   it("ignores item and turn notifications from other threads and turns", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "codelink-app-server-"));
     cleanup.push(dir);
-    const fakeCodex = path.join(dir, "codex");
-    fs.writeFileSync(
-      fakeCodex,
+    const fakeCodex = writeFakeCodex(
+      dir,
       `#!/usr/bin/env node
 const readline = require("node:readline");
 const rl = readline.createInterface({ input: process.stdin });
@@ -263,7 +281,6 @@ rl.on("line", (line) => {
   }
 });
 `,
-      { mode: 0o700 },
     );
 
     const result = await new StdioCodexAppServer(fakeCodex).runNewThread(
@@ -286,14 +303,12 @@ rl.on("line", (line) => {
   it("fails instead of hanging when an RPC response exceeds its timeout", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "codelink-app-server-"));
     cleanup.push(dir);
-    const fakeCodex = path.join(dir, "codex");
-    fs.writeFileSync(
-      fakeCodex,
+    const fakeCodex = writeFakeCodex(
+      dir,
       `#!/usr/bin/env node
 const readline = require("node:readline");
 readline.createInterface({ input: process.stdin });
 `,
-      { mode: 0o700 },
     );
 
     const client = new StdioCodexAppServer(fakeCodex, {
@@ -316,9 +331,8 @@ readline.createInterface({ input: process.stdin });
   it("fails instead of hanging when a started turn exceeds its timeout", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "codelink-app-server-"));
     cleanup.push(dir);
-    const fakeCodex = path.join(dir, "codex");
-    fs.writeFileSync(
-      fakeCodex,
+    const fakeCodex = writeFakeCodex(
+      dir,
       `#!/usr/bin/env node
 const readline = require("node:readline");
 const rl = readline.createInterface({ input: process.stdin });
@@ -334,7 +348,6 @@ rl.on("line", (line) => {
   }
 });
 `,
-      { mode: 0o700 },
     );
 
     const client = new StdioCodexAppServer(fakeCodex, {
@@ -357,9 +370,8 @@ rl.on("line", (line) => {
   it("reads the target turn when completion notifications contain no final text", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "codelink-app-server-"));
     cleanup.push(dir);
-    const fakeCodex = path.join(dir, "codex");
-    fs.writeFileSync(
-      fakeCodex,
+    const fakeCodex = writeFakeCodex(
+      dir,
       `#!/usr/bin/env node
 const readline = require("node:readline");
 const rl = readline.createInterface({ input: process.stdin });
@@ -398,7 +410,6 @@ rl.on("line", (line) => {
   }
 });
 `,
-      { mode: 0o700 },
     );
 
     const result = await new StdioCodexAppServer(fakeCodex).runNewThread(
@@ -429,9 +440,8 @@ rl.on("line", (line) => {
     async (requestMethod, expectedMessage) => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "codelink-app-server-"));
     cleanup.push(dir);
-    const fakeCodex = path.join(dir, "codex");
-    fs.writeFileSync(
-      fakeCodex,
+    const fakeCodex = writeFakeCodex(
+      dir,
       `#!/usr/bin/env node
 const readline = require("node:readline");
 const rl = readline.createInterface({ input: process.stdin });
@@ -457,7 +467,6 @@ rl.on("line", (line) => {
   }
 });
 `,
-      { mode: 0o700 },
     );
 
     const client = new StdioCodexAppServer(fakeCodex, {
@@ -483,9 +492,8 @@ rl.on("line", (line) => {
     cleanup.push(dir);
     const binDir = path.join(dir, "bin with spaces");
     fs.mkdirSync(binDir);
-    const fakeCodex = path.join(binDir, "codex.cmd");
-    fs.writeFileSync(
-      fakeCodex,
+    const fakeCodex = writeFakeCodexCmd(
+      binDir,
       `#!/usr/bin/env node
 const readline = require("node:readline");
 const rl = readline.createInterface({ input: process.stdin });
@@ -510,7 +518,6 @@ rl.on("line", (line) => {
   }
 });
 `,
-      { mode: 0o700 },
     );
 
     const result = await new StdioCodexAppServer(fakeCodex).runNewThread(

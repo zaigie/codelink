@@ -45,9 +45,11 @@ describe("loginWithQr", () => {
     expect(session.accountId).toBe("fresh-bot-im-bot");
     expect(store.loadSession()).toMatchObject({ token: "fresh-token" });
     expect(store.loadConfig().security.allowedUserIds).toEqual(["owner"]);
-    expect(fs.statSync(store.path("weixin-session.json")).mode & 0o777).toBe(
-      0o600,
-    );
+    if (process.platform !== "win32") {
+      expect(fs.statSync(store.path("weixin-session.json")).mode & 0o777).toBe(
+        0o600,
+      );
+    }
   });
 
   it("refreshes an expired QR code without abandoning the login flow", async () => {
