@@ -34,7 +34,9 @@ jobs:
         run: npm test
       - name: Run tests on Windows
         if: runner.os == 'Windows'
-        run: npm test -- --pool=threads
+        run: |
+          npm run build --silent
+          npx vitest run --pool=threads
       - run: npm run typecheck
       - run: npm run build
       - name: Verify committed runtime is current
