@@ -27,6 +27,8 @@ Codex 直接展示二维码后，用已经启用微信 ClawBot 的微信扫码�
 
 每个授权微信用户只保存一个当前 thread ID；完整对话历史仍由 Codex 管理。多个任务并行时，较早任务稍后完成也不会抢回已经更新的绑定。
 
+微信新建的不同会话使用各自独立的 thread ID，但统一以 `~/Documents/Codex/CodeLink` 作为 Codex 项目目录，不再为每个会话生成时间戳目录。这样为 Codex 按 cwd 归组时提供稳定的 **CodeLink** 项目归属；远程界面的刷新时机和历史项目呈现仍由 Codex 管理。通过桌面通知绑定的已有会话仍保持它原来的项目目录。
+
 处理微信请求时，CodeLink 使用微信原生的“正在输入”状态表示 Codex 仍在工作，并在长任务中每 5 秒保活；完成、失败或服务停止时自动取消。普通回合只返回 Codex 正文，不显示消息 ID、thread ID 或“当前会话已回复”等内部状态。只有用户明确要求新开会话时，回复才会提示旧上下文不会带入。
 
 ## 支持系统
@@ -88,6 +90,7 @@ macOS 提醒：CodeLink 当前通过 Node.js 运行 LaunchAgent，因此系统�
 - 当前只处理文字消息；
 - 微信续接不是 HITL 审批，不能在微信批准工具调用或权限请求；
 - 微信新建的会话会保存到 Codex，但不保证实时出现在 Codex App 左侧列表；
+- 升级不会改写或删除历史 thread；升级前已经生成的时间戳项目仍按 Codex 的历史记录保留；
 - CodeLink 使用公开的 [Codex App Server](https://developers.openai.com/codex/app-server/)，不会修改 App 数据库、伪装官方客户端或连接私有 IPC。
 
 完整安装、更新、卸载和故障排查见 [INSTALL.md](INSTALL.md)，更精确的产品边界见 [docs/CAPABILITY_BOUNDARY.md](docs/CAPABILITY_BOUNDARY.md)。

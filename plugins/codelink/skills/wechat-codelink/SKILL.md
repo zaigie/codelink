@@ -34,7 +34,7 @@ If the CodeLink skill is visible but its MCP tools are not, do not describe the 
 
 ## Boundaries
 
-- Only a new conversation created from WeChat gets a generated workspace. A bound desktop conversation keeps its existing Codex context.
+- New conversations created from WeChat use separate thread ids but share the configured CodeLink workspace instead of per-conversation directories. This provides a stable cwd for Codex project grouping, but CodeLink does not control remote UI refresh or historical project presentation. A bound desktop conversation keeps its existing Codex context and project.
 - Do not claim that a WeChat-created conversation will appear in the live Codex App sidebar.
 - Do not treat conversation continuation as human-in-the-loop approval. CodeLink does not approve tool calls or permission requests through WeChat.
 - Never reveal or request the stored bot token through a tool response.

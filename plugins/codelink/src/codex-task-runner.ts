@@ -1,6 +1,4 @@
 import fs from "node:fs";
-import path from "node:path";
-import { randomUUID } from "node:crypto";
 
 import {
   CodexAppServer,
@@ -73,8 +71,8 @@ export class CodexTaskRunner implements TaskRunner {
     const generationAtTaskStart =
       input.conversationGenerationAtReceipt ?? snapshotAtTaskStart.generation;
     const conversation = input.startNew ? null : bindingAtTaskStart;
-    const workspace = conversation ? undefined : this.createTaskWorkspace();
-    const executionCwd = workspace ?? this.ensureTaskWorkspaceRoot();
+    const executionCwd = this.ensureTaskWorkspaceRoot();
+    const workspace = conversation ? undefined : executionCwd;
     const startedAt = new Date().toISOString();
     const record: TaskRecord = {
       ...(existing ?? {
@@ -175,15 +173,6 @@ export class CodexTaskRunner implements TaskRunner {
       }));
       throw error;
     }
-  }
-
-  private createTaskWorkspace(): string {
-    const now = new Date();
-    const date = now.toISOString().slice(0, 10);
-    const taskId = `${now.toISOString().replaceAll(":", "-").replace(".", "-")}-${randomUUID().slice(0, 8)}`;
-    const workspace = path.join(this.config.taskWorkspaceRoot, date, taskId);
-    fs.mkdirSync(workspace, { recursive: true, mode: 0o700 });
-    return workspace;
   }
 
   private ensureTaskWorkspaceRoot(): string {

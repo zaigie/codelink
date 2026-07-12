@@ -122,6 +122,7 @@ node <源码目录>/plugins/codelink/scripts/setup.mjs
 8. 另一个桌面任务通知后，以最近通知的任务为当前绑定；
 9. 发送一个需要数秒的微信请求，处理期间应显示原生“正在输入”，完成后只收到 Codex 正文，不出现消息 ID、thread ID 或“会话已回复”标签；
 10. `/new 新的问题` 的最终正文前只出现一次旧上下文不会带入的提示。
+11. 连续创建两个微信新会话时，thread ID 不同，但 App Server 返回的 cwd 都是同一个 `~/Documents/Codex/CodeLink`；不得再出现按日期或时间戳生成的会话工作目录。
 
 安装器会写入不含用户标识的私有安装回执。可运行下面的安全自检；它只输出布尔状态，不输出账号、微信用户 ID、thread ID、token 或本地路径：
 
@@ -142,6 +143,8 @@ node ~/.codelink/runtime/cli.cjs doctor
 ## 更新
 
 用户再次给 Codex 同一段安装提示即可。Codex 应对持久源码执行 `git pull --ff-only`，然后重新运行 `setup.mjs`。安装器替换预构建 runtime、重装本地插件并重启服务，但保留已有微信 session、同步游标、context token、会话绑定和任务记录，不应要求重复扫码。更新完成后新建 Codex 任务加载新版插件。
+
+更新不会改写或删除已有 Codex thread。旧版本已经创建的时间戳项目会继续作为历史记录保留；更新后的微信新会话统一归入 `~/Documents/Codex/CodeLink`。
 
 ## 卸载后台服务
 

@@ -48,11 +48,11 @@ describe("CodexTaskRunner", () => {
     });
 
     expect(result.threadId).toBe("thread-123");
-    expect(result.workspace).toBeTruthy();
-    expect(fs.statSync(result.workspace!).isDirectory()).toBe(true);
+    expect(result.workspace).toBe(workspaceRoot);
+    expect(fs.statSync(workspaceRoot).isDirectory()).toBe(true);
     expect(runNewThread).toHaveBeenCalledWith(
       expect.objectContaining({
-        cwd: result.workspace,
+        cwd: workspaceRoot,
         sandboxMode: "workspace-write",
         approvalPolicy: "never",
         developerInstructions: expect.stringContaining(
@@ -81,6 +81,54 @@ describe("CodexTaskRunner", () => {
       status: "completed",
       threadId: "thread-123",
     });
+  });
+
+  it("groups separate new conversations under the shared CodeLink workspace", async () => {
+    const stateDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), "codelink-runner-state-"),
+    );
+    const workspaceRoot = fs.mkdtempSync(
+      path.join(os.tmpdir(), "codelink-runner-work-"),
+    );
+    cleanup.push(stateDir, workspaceRoot);
+    const store = new StateStore(stateDir);
+    const runNewThread = vi
+      .fn()
+      .mockResolvedValueOnce({
+        threadId: "thread-one",
+        finalResponse: "first",
+      })
+      .mockResolvedValueOnce({
+        threadId: "thread-two",
+        finalResponse: "second",
+      });
+    const runner = new CodexTaskRunner(
+      { ...defaultConfig().codex, taskWorkspaceRoot: workspaceRoot },
+      store,
+      { runNewThread, continueThread: vi.fn() },
+    );
+
+    const first = await runner.runTask({
+      messageId: "group-one",
+      fromUserId: "owner",
+      prompt: "first topic",
+    });
+    const second = await runner.runTask({
+      messageId: "group-two",
+      fromUserId: "owner",
+      prompt: "second topic",
+      startNew: true,
+    });
+
+    expect(first.threadId).toBe("thread-one");
+    expect(second.threadId).toBe("thread-two");
+    expect(first.workspace).toBe(workspaceRoot);
+    expect(second.workspace).toBe(workspaceRoot);
+    expect(runNewThread.mock.calls.map(([options]) => options.cwd)).toEqual([
+      workspaceRoot,
+      workspaceRoot,
+    ]);
+    expect(fs.readdirSync(workspaceRoot)).toEqual([]);
   });
 
   it("binds a new thread as soon as App Server starts it", async () => {

@@ -33,7 +33,9 @@ typing 线协议依据腾讯公开、MIT 授权且随包发布源码的 [`@tence
 - `/new` 清除当前绑定，下一条消息从新上下文开始；
 - `/new <请求>` 立即新建会话并执行请求；
 - “开个新会话”“重新开一个会话，……”或“换个话题：……”等句首明确意图也能切换；
-- 讨论“如何实现新建会话功能”等普通请求不会触发切换。
+- 讨论“如何实现新建会话功能”等普通请求不会触发切换；
+- 每个新会话有独立 thread ID，但 `thread/start` 统一使用 `~/Documents/Codex/CodeLink` cwd，不再由 CodeLink 为每个会话生成时间戳项目目录；Codex 远程界面的刷新时机和历史项目呈现不在公开 App Server 的控制范围内；
+- 绑定已有桌面 thread 时不覆盖原任务的 cwd，升级也不改写或删除旧版本已创建的历史 thread。
 
 ### 桌面任务绑定与通知
 
@@ -63,7 +65,7 @@ CodeLink 新建的微信会话会保存到本机 Codex 存储并返回 thread ID
 
 - 当前只处理文字消息；
 - 微信续接不等于 HITL 审批，不能批准 Codex 工具调用或权限请求；
-- 微信新建的会话使用生成工作目录；绑定的桌面任务保持原项目、上下文和设置；
+- 微信新建的会话统一使用 CodeLink 工作目录；绑定的桌面任务保持原项目、上下文和设置；
 - 核心运行时面向官方 Codex 与 Node.js 22 覆盖的 macOS、Linux、Windows x64/arm64；macOS 已实机运行，Linux/Windows 安装器仍待对应系统首轮实机回归；
 - 自动常驻分别使用 macOS LaunchAgent、Linux systemd user service 和 Windows 当前用户 Scheduled Task；非 systemd Linux 需要用户已有的进程管理器；
 - 本地 daemon API 只应监听 loopback 地址。
@@ -79,6 +81,7 @@ CodeLink 新建的微信会话会保存到本机 Codex 存储并返回 thread ID
 7. 较早任务在新绑定之后完成时，不会把当前会话切回去；
 8. daemon 重启后仍能从保存的 thread ID 继续；
 9. 长任务显示临时“正在输入”，普通最终回复不暴露内部 ID 或运行标签；
-10. MCP 和日志不暴露 bot token、context token 或 typing ticket。
+10. MCP 和日志不暴露 bot token、context token 或 typing ticket；
+11. 两个新建 thread 的 ID 不同且 cwd 都等于同一个 CodeLink 工作目录，不再生成时间戳项目。
 
 微信新建会话是否出现在 Codex App 侧栏不作为验收项。
