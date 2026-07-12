@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import http, { IncomingMessage, ServerResponse } from "node:http";
 
 import { parseNewConversationIntent } from "./conversation-intent.js";
@@ -46,6 +47,11 @@ type PendingThread = {
   messageId: string;
   promise: Promise<ConversationBinding | null>;
   settle(threadId?: string): void;
+};
+
+type MessageIdentity = {
+  current: string;
+  legacyTaskId?: string;
 };
 
 export class CodelinkDaemon {
@@ -202,23 +208,33 @@ export class CodelinkDaemon {
           : [],
     );
     if (!allowed.has(fromUserId)) {
-      process.stderr.write(`忽略未授权微信用户：${fromUserId}\n`);
+      process.stderr.write("忽略未授权微信消息\n");
+      return;
+    }
+    const identity = resolveMessageIdentity(
+      session.accountId,
+      fromUserId,
+      message,
+    );
+    const messageId = identity.current;
+    if (this.store.hasProcessedMessage(messageId)) return;
+    const existingTask =
+      this.store.findTask(messageId) ??
+      (identity.legacyTaskId
+        ? this.store.findTask(identity.legacyTaskId)
+        : null);
+    if (existingTask?.fromUserId === fromUserId) {
+      this.store.markProcessedMessage(messageId);
       return;
     }
     if (message.context_token)
       this.store.saveContextToken(fromUserId, message.context_token);
-
-    const messageId = String(
-      message.message_id ??
-        message.seq ??
-        `${fromUserId}-${message.create_time_ms ?? Date.now()}`,
-    );
-    if (this.store.findTask(messageId)) return;
     const contextToken =
       message.context_token ||
       this.store.getContextToken(fromUserId)?.contextToken;
 
     if (text === "/status") {
+      this.store.markProcessedMessage(messageId);
       return contextToken
         ? this.trackBackground(
             this.deliverOperationalText(
@@ -231,6 +247,7 @@ export class CodelinkDaemon {
         : undefined;
     }
     if (text === "/help") {
+      this.store.markProcessedMessage(messageId);
       return contextToken
         ? this.trackBackground(
             this.deliverOperationalText(
@@ -248,6 +265,7 @@ export class CodelinkDaemon {
       this.store.clearConversation(fromUserId);
       this.pendingThreads.delete(fromUserId);
       if (!conversationIntent.prompt) {
+        this.store.markProcessedMessage(messageId);
         return contextToken
           ? this.trackBackground(
               this.deliverOperationalText(
@@ -298,8 +316,11 @@ export class CodelinkDaemon {
         startedAt: now,
       })
     ) {
+      ownedPending?.settle();
+      this.store.markProcessedMessage(messageId);
       return;
     }
+    this.store.markProcessedMessage(messageId);
 
     const execution = this.executeTask(
       session,
@@ -996,6 +1017,46 @@ function formatTaskNotification(text: string, conversationBound: boolean) {
     ? "—— CodeLink 任务通知\n此任务已设为微信当前 Codex 会话；可直接回复继续，发送 /new 或直接说“开个新会话”开始新会话。"
     : "—— CodeLink 任务通知\n本通知未切换当前 Codex 会话；回复将继续此前已绑定的会话（如有），发送 /new 开始新会话。";
   return `${text.trim()}\n\n${footer}`;
+}
+
+function resolveMessageIdentity(
+  accountId: string,
+  fromUserId: string,
+  message: WeixinMessage,
+): MessageIdentity {
+  const namespace = `weixin:${encodeURIComponent(accountId)}`;
+  if (message.message_id !== undefined && message.message_id !== null) {
+    const value = String(message.message_id);
+    return {
+      current: `${namespace}:message_id:${value}`,
+      legacyTaskId: value,
+    };
+  }
+  if (message.seq !== undefined && message.seq !== null) {
+    const value = String(message.seq);
+    return {
+      current: `${namespace}:seq:${value}`,
+      legacyTaskId: value,
+    };
+  }
+  const digest = createHash("sha256")
+    .update(
+      JSON.stringify({
+        fromUserId: message.from_user_id ?? null,
+        toUserId: message.to_user_id ?? null,
+        messageType: message.message_type ?? null,
+        messageState: message.message_state ?? null,
+        createTimeMs: message.create_time_ms ?? null,
+        items: message.item_list ?? [],
+      }),
+    )
+    .digest("base64url");
+  return {
+    current: `${namespace}:derived:${digest}`,
+    ...(message.create_time_ms !== undefined
+      ? { legacyTaskId: `${fromUserId}-${message.create_time_ms}` }
+      : {}),
+  };
 }
 
 function previewText(value: string, max = 500): string {

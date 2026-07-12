@@ -55,7 +55,9 @@ daemon 在接受任务时记录消息到达时的绑定，保证这条微信消�
 
 通知发送失败时同样按绑定版本做条件恢复，因此较早失败的通知不会回滚掉较晚成功的同 thread 通知。这些保证针对单个常驻 daemon 进程；同一状态目录不支持多个 daemon 同时写入。
 
-长任务不会阻塞微信长轮询。daemon 先把完整恢复请求以私有 `accepted` 记录写入，再提交 `get_updates_buf`，随后在后台执行；临时输入状态失败不会阻止 Codex。首个新 thread 尚未返回 ID 时，同一用户的后续消息只等待“路由建立”而不等待整个任务，拿到 ID 后即可通过 `turn/steer` 进入活动 turn。同一批更新里的连续消息也遵循这条规则。
+长任务不会阻塞微信长轮询。daemon 先把完整恢复请求与 replay ledger 以私有记录写入，再提交 `get_updates_buf`，随后在后台启动 typing 与任务执行；临时输入状态启动缓慢或失败都不会阻止持久接受、游标推进或 Codex。首个新 thread 尚未返回 ID 时，同一用户的后续消息只等待“路由建立”而不等待整个任务，拿到 ID 后即可通过 `turn/steer` 进入活动 turn。同一批更新里的连续消息也遵循这条规则。
+
+每条授权文字消息先解析按微信账号与 ID 来源（`message_id`、`seq` 或派生摘要）隔离的稳定身份；升级时仍识别旧版未加 namespace 的 `TaskRecord`，避免已接受任务被重放。普通任务以 `TaskRecord` 加私有 replay ledger 双重接受，`/status`、`/help` 和 `/new` 也在提交新游标前写入 replay ledger；同一更新批次重放时不会再次执行命令或任务。入站 allowlist 在保存 `context_token` 或 replay 状态之前检查，未授权消息不会污染状态，拒绝日志也不包含用户 ID 或 token。
 
 会话状态另有单调 generation。即使当前没有 thread，显式 `/new` 也会推进 generation，因此更早的异步 `thread/start` 不能在稍后抢回绑定。
 

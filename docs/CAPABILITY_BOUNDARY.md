@@ -16,11 +16,13 @@ CodeLink 当前的核心能力是：为每个授权微信用户维护一个“�
 - 后续普通消息通过 `thread/resume` 继续同一个 thread；
 - 若原任务仍在运行，CodeLink 使用官方 `turn/steer` 把微信回复加入当前 turn；否则使用 `turn/start` 开始下一轮；
 - 绑定保存在 `conversations.json`，每个微信用户相互独立。
+- 更新游标只在整批消息完成持久接受后推进；重放同一消息 ID 不会重复执行 `/status`、`/help`、`/new` 或普通任务。
 
 ### 回复状态与正文
 
 - Codex 处理微信请求期间，CodeLink 通过腾讯公开 iLink `getconfig` / `sendtyping` 协议显示微信原生“正在输入”状态；
 - 状态立即开始、每 5 秒保活，在成功、失败或 daemon 停止时尽力取消；状态接口失败不会阻止 Codex 执行或最终正文；
+- typing 请求缓慢时也不会阻塞任务与 replay ledger 的持久接受、更新游标或后续轮询；
 - 同一用户有多个并发任务时共享一份输入状态，最后一个任务结束后才取消；
 - 普通回复只包含 Codex 正文，不附加消息 ID、thread ID、“当前会话已回复”或“新会话已回复”；
 - 首次没有绑定时自动创建会话，但不显示多余的新会话提示；只有 `/new <请求>` 或明确自然语言切换才提示旧上下文不会带入；
@@ -67,6 +69,7 @@ CodeLink 新建的微信会话会保存到本机 Codex 存储并返回 thread ID
 - 核心运行时面向官方 Codex 与 Node.js 22 覆盖的 macOS、Linux、Windows x64/arm64；macOS 已实机运行，Linux/Windows 安装器仍待对应系统首轮实机回归；
 - 自动常驻分别使用 macOS LaunchAgent、Linux systemd user service 和 Windows 当前用户 Scheduled Task；非 systemd Linux 需要用户已有的进程管理器；
 - 本地 daemon API 只应监听 loopback 地址。
+- 未授权微信消息不会保存上下文或 replay 状态，拒绝日志不包含用户 ID 或 token。
 
 ## 验收标准
 

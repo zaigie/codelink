@@ -72,6 +72,7 @@ async function main(): Promise<void> {
         config: store.path("config.json"),
         session: store.path("weixin-session.json"),
         syncCursor: store.path("get-updates.json"),
+        processedMessages: store.path("processed-messages.json"),
         contextTokens: store.path("context-tokens.json"),
         conversations: store.path("conversations.json"),
         tasks: store.path("tasks.json"),

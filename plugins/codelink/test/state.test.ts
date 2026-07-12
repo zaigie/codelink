@@ -106,6 +106,21 @@ describe("StateStore", () => {
     });
   });
 
+  it("persists a bounded private replay ledger", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "codelink-state-"));
+    cleanup.push(dir);
+    const store = new StateStore(dir);
+
+    expect(store.markProcessedMessage("message-1")).toBe(true);
+    expect(store.markProcessedMessage("message-1")).toBe(false);
+
+    const reloaded = new StateStore(dir);
+    expect(reloaded.hasProcessedMessage("message-1")).toBe(true);
+    expect(
+      fs.statSync(store.path("processed-messages.json")).mode & 0o777,
+    ).toBe(0o600);
+  });
+
   it("persists, replaces, and clears the active Codex conversation per WeChat user", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "codelink-state-"));
     cleanup.push(dir);

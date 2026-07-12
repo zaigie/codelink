@@ -68,6 +68,12 @@ type ConversationState = {
   generations: Record<string, number>;
 };
 
+type ProcessedMessageState = {
+  messageIds: string[];
+};
+
+const MAX_PROCESSED_MESSAGE_IDS = 5_000;
+
 export class StateStore {
   readonly dir: string;
 
@@ -115,6 +121,19 @@ export class StateStore {
 
   saveSyncCursor(cursor: string): void {
     this.writeJson("get-updates.json", { get_updates_buf: cursor }, 0o600);
+  }
+
+  hasProcessedMessage(messageId: string): boolean {
+    return this.loadProcessedMessageState().messageIds.includes(messageId);
+  }
+
+  markProcessedMessage(messageId: string): boolean {
+    const state = this.loadProcessedMessageState();
+    if (state.messageIds.includes(messageId)) return false;
+    state.messageIds.push(messageId);
+    state.messageIds = state.messageIds.slice(-MAX_PROCESSED_MESSAGE_IDS);
+    this.writeJson("processed-messages.json", state, 0o600);
+    return true;
   }
 
   loadContextTokens(): Record<string, ContextTokenRecord> {
@@ -287,6 +306,19 @@ export class StateStore {
         data?.generations && typeof data.generations === "object"
           ? data.generations
           : {},
+    };
+  }
+
+  private loadProcessedMessageState(): ProcessedMessageState {
+    const data = this.readJson(
+      "processed-messages.json",
+    ) as ProcessedMessageState | null;
+    return {
+      messageIds: Array.isArray(data?.messageIds)
+        ? data.messageIds.filter(
+            (messageId): messageId is string => typeof messageId === "string",
+          )
+        : [],
     };
   }
 
