@@ -29,7 +29,12 @@ jobs:
           cache-dependency-path: plugins/codelink/package-lock.json
       - run: npm install --global npm@10.9.8
       - run: npm ci --no-audit --no-fund
-      - run: npm test
+      - name: Run tests
+        if: runner.os != 'Windows'
+        run: npm test
+      - name: Run tests on Windows
+        if: runner.os == 'Windows'
+        run: npm test -- --pool=threads
       - run: npm run typecheck
       - run: npm run build
       - name: Verify committed runtime is current
