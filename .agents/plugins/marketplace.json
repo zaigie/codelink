@@ -1,0 +1,20 @@
+{
+  "name": "codelink-local",
+  "interface": {
+    "displayName": "Codelink Local"
+  },
+  "plugins": [
+    {
+      "name": "codelink",
+      "source": {
+        "source": "local",
+        "path": "./plugins/codelink"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

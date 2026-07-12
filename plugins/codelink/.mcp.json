@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "codelink": {
+      "command": "node",
+      "args": ["./dist/mcp.js"],
+      "cwd": "."
+    }
+  }
+}

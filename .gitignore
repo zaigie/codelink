@@ -1,0 +1,14 @@
+node_modules/
+plugins/codelink/node_modules/
+plugins/codelink/dist/
+coverage/
+.venv/
+.bootstrap/
+.DS_Store
+*.log
+*.local
+
+# Never commit WeChat credentials or Codex task state.
+.codelink/
+weixin-session.json
+login-qr.png

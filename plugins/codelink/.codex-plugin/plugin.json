@@ -1,0 +1,37 @@
+{
+  "name": "codelink",
+  "version": "0.1.0+codex.20260712090857",
+  "description": "Connect Codex tasks to WeChat for task intake and completion notifications.",
+  "author": {
+    "name": "Zaigie",
+    "url": "https://github.com/zaigie"
+  },
+  "homepage": "https://github.com/zaigie/codelink",
+  "repository": "https://github.com/zaigie/codelink",
+  "license": "MIT",
+  "keywords": [
+    "wechat",
+    "weixin",
+    "codex",
+    "notifications",
+    "tasks"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "CodeLink",
+    "shortDescription": "Receive Codex tasks from WeChat and send task updates back.",
+    "longDescription": "CodeLink connects a standalone WeChat iLink daemon to Codex. Incoming WeChat messages create independent Codex tasks, while any Codex task can send progress or completion notifications through the CodeLink MCP tools.",
+    "developerName": "Zaigie",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "\u68c0\u67e5\u5fae\u4fe1\u8fde\u63a5\u72b6\u6001\u3002",
+      "\u4efb\u52a1\u5b8c\u6210\u540e\u901a\u8fc7\u5fae\u4fe1\u901a\u77e5\u6211\u3002",
+      "\u628a\u5f53\u524d\u4efb\u52a1\u603b\u7ed3\u53d1\u9001\u5230\u5fae\u4fe1\u3002"
+    ]
+  },
+  "mcpServers": "./.mcp.json"
+}

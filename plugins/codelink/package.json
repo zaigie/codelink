@@ -1,0 +1,38 @@
+{
+  "name": "@zaigie/codelink",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Standalone WeChat iLink bridge and Codex plugin",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "bin": {
+    "codelink": "./dist/cli.cjs"
+  },
+  "scripts": {
+    "build": "npm run typecheck && npm run build:mcp && npm run build:cli",
+    "build:mcp": "esbuild src/mcp.ts --bundle --platform=node --format=esm --target=node22 --outfile=dist/mcp.js",
+    "build:cli": "esbuild src/cli.ts --bundle --platform=node --format=cjs --target=node22 --banner:js='#!/usr/bin/env node' --outfile=dist/cli.cjs",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run build:mcp --silent && vitest run",
+    "test:watch": "vitest",
+    "dev": "tsx src/cli.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.29.0",
+    "qrcode": "1.5.4",
+    "qrcode-terminal": "0.12.0",
+    "zod": "4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/qrcode": "^1.5.5",
+    "@types/qrcode-terminal": "^0.12.2",
+    "esbuild": "^0.25.0",
+    "tsx": "4.23.0",
+    "typescript": "^5.9.3",
+    "vitest": "4.1.10"
+  }
+}
