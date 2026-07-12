@@ -1,5 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import fs from "node:fs";
+import { fileURLToPath } from "node:url";
 import { z } from "zod";
 
 import { DaemonClient } from "./daemon-client.js";
@@ -105,11 +107,25 @@ async function main(): Promise<void> {
   await server.connect(transport);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMainModule(import.meta.url, process.argv[1])) {
   main().catch((error) => {
     process.stderr.write(
       `CodeLink MCP failed: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}\n`,
     );
     process.exitCode = 1;
   });
+}
+
+function isMainModule(
+  moduleUrl: string,
+  entrypoint: string | undefined,
+): boolean {
+  if (!entrypoint) return false;
+  try {
+    return (
+      fs.realpathSync(fileURLToPath(moduleUrl)) === fs.realpathSync(entrypoint)
+    );
+  } catch {
+    return false;
+  }
 }
