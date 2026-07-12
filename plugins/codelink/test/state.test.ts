@@ -8,6 +8,11 @@ import { StateStore } from "../src/state.js";
 
 const cleanup: string[] = [];
 
+function expectPrivateFileMode(filePath: string): void {
+  if (process.platform === "win32") return;
+  expect(fs.statSync(filePath).mode & 0o777).toBe(0o600);
+}
+
 afterEach(() => {
   for (const dir of cleanup.splice(0))
     fs.rmSync(dir, { recursive: true, force: true });
@@ -31,12 +36,8 @@ describe("StateStore", () => {
     expect(store.getContextToken("owner@im.wechat")?.contextToken).toBe(
       "context-1",
     );
-    expect(fs.statSync(store.path("weixin-session.json")).mode & 0o777).toBe(
-      0o600,
-    );
-    expect(fs.statSync(store.path("context-tokens.json")).mode & 0o777).toBe(
-      0o600,
-    );
+    expectPrivateFileMode(store.path("weixin-session.json"));
+    expectPrivateFileMode(store.path("context-tokens.json"));
   });
 
   it("记录安装状态时保留微信 session，并使用私有权限", () => {
@@ -67,9 +68,7 @@ describe("StateStore", () => {
       pluginInstalled: true,
       mcpBundleReady: true,
     });
-    expect(fs.statSync(store.path("install-receipt.json")).mode & 0o777).toBe(
-      0o600,
-    );
+    expectPrivateFileMode(store.path("install-receipt.json"));
   });
 
   it("deduplicates tasks by message id", () => {
@@ -156,9 +155,7 @@ describe("StateStore", () => {
     expect(store.getConversation("teammate")?.threadId).toBe(
       "thread-teammate",
     );
-    expect(fs.statSync(store.path("conversations.json")).mode & 0o777).toBe(
-      0o600,
-    );
+    expectPrivateFileMode(store.path("conversations.json"));
 
     store.clearConversation("owner");
     expect(store.getConversation("owner")).toBeNull();

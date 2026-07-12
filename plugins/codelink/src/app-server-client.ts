@@ -229,7 +229,7 @@ export class StdioCodexAppServer implements CodexAppServer {
           : {}),
       };
     } finally {
-      session.close();
+      await session.close();
     }
   }
 }
@@ -337,14 +337,33 @@ class AppServerSession {
     for (const message of queued) this.onMessage(message);
   }
 
-  close(): void {
+  async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
-    this.child.stdin.end();
-    const forceClose = setTimeout(() => {
-      if (this.child.exitCode === null) this.child.kill("SIGTERM");
-    }, 1_000);
-    forceClose.unref();
+    if (this.child.exitCode !== null || this.child.signalCode !== null) return;
+
+    await new Promise<void>((resolve) => {
+      let forceClose: NodeJS.Timeout | undefined;
+      let closeDeadline: NodeJS.Timeout | undefined;
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        if (forceClose) clearTimeout(forceClose);
+        if (closeDeadline) clearTimeout(closeDeadline);
+        this.child.off("close", finish);
+        this.child.off("error", finish);
+        resolve();
+      };
+
+      this.child.once("close", finish);
+      this.child.once("error", finish);
+      this.child.stdin.end();
+      forceClose = setTimeout(() => {
+        if (this.child.exitCode === null) this.child.kill("SIGTERM");
+      }, 1_000);
+      closeDeadline = setTimeout(finish, 2_000);
+    });
   }
 
   private write(message: unknown): void {
