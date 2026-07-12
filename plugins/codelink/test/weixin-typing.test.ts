@@ -509,4 +509,56 @@ describe("WeixinTypingIndicator", () => {
       },
     ]);
   });
+
+  it("redacts remote typing failures before writing them to stderr", async () => {
+    const fetchMock = vi.fn<typeof fetch>(async (url, init) => {
+      const path = new URL(String(url)).pathname;
+      if (path.endsWith("/getconfig")) {
+        return new Response(
+          JSON.stringify({ ret: 0, typing_ticket: "typing-ticket" }),
+          { status: 200 },
+        );
+      }
+      const body = JSON.parse(String(init?.body));
+      if (body.status === 1) {
+        return new Response(
+          JSON.stringify({
+            ret: -7,
+            errcode: -14,
+            errmsg: "LEAK_MARKER\nAuthorization: Bearer fake-secret",
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response(JSON.stringify({ ret: 0 }), { status: 200 });
+    });
+    let resolveLogged!: () => void;
+    const logged = new Promise<void>((resolve) => {
+      resolveLogged = resolve;
+    });
+    let stderrOutput = "";
+    const stderr = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation((chunk) => {
+        stderrOutput += String(chunk);
+        resolveLogged();
+        return true;
+      });
+    const client = new WeixinClient(defaultConfig().weixin, fetchMock);
+    const indicator = new WeixinTypingIndicator(client);
+
+    const result = await indicator.during(
+      { session, toUserId: "owner", contextToken: "ctx" },
+      async () => {
+        await logged;
+        return "task result";
+      },
+    );
+
+    expect(result).toBe("task result");
+    expect(stderr).toHaveBeenCalledTimes(1);
+    expect(stderrOutput).toBe("微信输入状态更新失败（错误码 -7）\n");
+    expect(stderrOutput).not.toContain("LEAK_MARKER");
+    expect(stderrOutput).not.toContain("fake-secret");
+  });
 });
