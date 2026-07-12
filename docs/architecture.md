@@ -75,7 +75,7 @@ daemon 在接受任务时记录消息到达时的绑定，保证这条微信消�
 
 ## App Server 可靠性
 
-每次运行严格筛选目标 `threadId + turnId` 的通知；RPC 和整个 turn 分别有 30 秒与 30 分钟上限。若完成通知缺少 `final_answer`，只通过官方 `thread/read(includeTurns: true)` 读取目标 turn。任何需要客户端响应的审批或交互 server request 都会立即明确失败，不会静默挂起。后台安装优先固定官方原生 Codex 路径，前台 Windows 运行也能解析 `codex.cmd`/`.bat` shim。
+每次运行严格筛选目标 `threadId + turnId` 的通知；RPC 和整个 turn 分别有 30 秒与 30 分钟上限。若完成通知缺少 `final_answer`，只通过官方 `thread/read(includeTurns: true)` 读取目标 turn。需要客户端响应的审批与 elicitation 会被明确拒绝，用户输入和权限请求返回空安全响应，未知 request 返回 method-not-supported，不会静默挂起或使当前 RPC 误失败。后台安装优先固定官方原生 Codex 路径，前台 Windows 运行也能解析 `codex.cmd`/`.bat` shim。
 
 ## 独立登录
 

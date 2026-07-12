@@ -365,11 +365,11 @@ class AppServerSession {
   }
 
   private onMessage(message: RpcResponse): void {
-    if (message.method && message.id !== undefined) {
-      const unsupported = message.method.endsWith("/requestApproval")
-        ? `CodeLink 当前不支持微信审批（${message.method}）`
-        : `CodeLink 当前不支持 Codex 交互请求（${message.method}）`;
-      this.fail(new Error(unsupported));
+    if (
+      message.method &&
+      (typeof message.id === "number" || typeof message.id === "string")
+    ) {
+      this.respondToServerRequest(message.id, message.method);
       return;
     }
 
@@ -403,6 +403,39 @@ class AppServerSession {
         pending.resolve(message.result);
       }
       return;
+    }
+  }
+
+  private respondToServerRequest(id: number | string, method: string): void {
+    switch (method) {
+      case "item/commandExecution/requestApproval":
+      case "item/fileChange/requestApproval":
+        this.write({ id, result: { decision: "decline" } });
+        return;
+      case "item/tool/requestUserInput":
+        this.write({ id, result: { answers: {} } });
+        return;
+      case "mcpServer/elicitation/request":
+        this.write({
+          id,
+          result: { action: "decline", content: null, _meta: null },
+        });
+        return;
+      case "item/permissions/requestApproval":
+        this.write({ id, result: { permissions: {}, scope: "turn" } });
+        return;
+      case "execCommandApproval":
+      case "applyPatchApproval":
+        this.write({ id, result: { decision: "denied" } });
+        return;
+      default:
+        this.write({
+          id,
+          error: {
+            code: -32601,
+            message: `Method not supported: ${method}`,
+          },
+        });
     }
   }
 
