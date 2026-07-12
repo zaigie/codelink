@@ -132,15 +132,17 @@ node <源码目录>/plugins/codelink/scripts/setup.mjs
 
 用户再次给 Codex 同一段安装提示即可。Codex 应对持久源码执行 `git pull --ff-only`，然后重新运行 `setup.mjs`。已有微信 session 会保留，不应要求重复扫码。更新完成后新建 Codex 任务加载新版插件。
 
-## 卸载后台服务
+## 卸载 CodeLink
 
-卸载只移除常驻服务和复制的 runtime，保留微信登录与任务状态：
+卸载会依次停止常驻服务、移除 `codelink` 插件与本地 marketplace，再删除服务配置和复制的 runtime；微信登录、任务绑定、日志、状态目录及持久源码均保留：
 
 ```text
 macOS:  sh <源码目录>/plugins/codelink/scripts/uninstall-launch-agent.sh
 Linux:  sh <源码目录>/plugins/codelink/scripts/uninstall-systemd-user.sh
 Windows: powershell -NoProfile -ExecutionPolicy Bypass -File <源码目录>\plugins\codelink\scripts\uninstall-scheduled-task.ps1
 ```
+
+重复运行卸载是安全的。脚本只忽略可精确确认的“尚未安装/已经移除”结果；权限、服务管理器或 Codex 的真实错误会停止卸载，并保留尚未清理的服务配置和 runtime 供诊断。修复错误后重新运行即可继续完成。
 
 删除 `~/.codelink` 会同时删除凭证、绑定和默认源码目录，必须由用户明确确认后再执行。
 

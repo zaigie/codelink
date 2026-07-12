@@ -45,6 +45,18 @@ export function platformSupport(platform, arch) {
   return target;
 }
 
+function powershellExecutable(env) {
+  return env.SystemRoot || env.WINDIR
+    ? path.win32.join(
+        env.SystemRoot || env.WINDIR,
+        "System32",
+        "WindowsPowerShell",
+        "v1.0",
+        "powershell.exe",
+      )
+    : "powershell.exe";
+}
+
 export function serviceInstaller(platform, scriptsDir, env = process.env) {
   const pathApi = platform === "win32" ? path.win32 : path.posix;
   switch (platform) {
@@ -63,16 +75,7 @@ export function serviceInstaller(platform, scriptsDir, env = process.env) {
     case "win32":
       return {
         name: "Windows Scheduled Task",
-        command:
-          env.SystemRoot || env.WINDIR
-            ? path.win32.join(
-                env.SystemRoot || env.WINDIR,
-                "System32",
-                "WindowsPowerShell",
-                "v1.0",
-                "powershell.exe",
-              )
-            : "powershell.exe",
+        command: powershellExecutable(env),
         args: [
           "-NoProfile",
           "-NonInteractive",
@@ -85,6 +88,58 @@ export function serviceInstaller(platform, scriptsDir, env = process.env) {
     default:
       throw new Error(`没有适用于 ${platform} 的 CodeLink 常驻安装器。`);
   }
+}
+
+export function serviceUninstaller(platform, scriptsDir, env = process.env) {
+  const pathApi = platform === "win32" ? path.win32 : path.posix;
+  switch (platform) {
+    case "darwin": {
+      const script = pathApi.join(scriptsDir, "uninstall-launch-agent.sh");
+      return {
+        command: "/bin/sh",
+        argsForPhase: (phase) => [script, servicePhaseArgument(phase)],
+      };
+    }
+    case "linux": {
+      const script = pathApi.join(scriptsDir, "uninstall-systemd-user.sh");
+      return {
+        command: "/bin/sh",
+        argsForPhase: (phase) => [script, servicePhaseArgument(phase)],
+      };
+    }
+    case "win32": {
+      const script = pathApi.join(scriptsDir, "uninstall-scheduled-task.ps1");
+      const args = [
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        script,
+      ];
+      return {
+        command: powershellExecutable(env),
+        argsForPhase: (phase) => [
+          ...args,
+          "-Phase",
+          servicePhase(phase),
+        ],
+      };
+    }
+    default:
+      throw new Error(`没有适用于 ${platform} 的 CodeLink 卸载器。`);
+  }
+}
+
+function servicePhase(phase) {
+  if (phase !== "stop" && phase !== "cleanup") {
+    throw new Error(`未知卸载阶段：${phase}`);
+  }
+  return phase;
+}
+
+function servicePhaseArgument(phase) {
+  return `--service-${servicePhase(phase)}`;
 }
 
 export function parseSetupArgs(args) {
@@ -207,11 +262,17 @@ export function resolveCodexExecutable(options = {}) {
   const env = options.env ?? process.env;
   const exists = options.exists ?? fs.existsSync;
   const realpath = options.realpath ?? fs.realpathSync;
+  const cwd = options.cwd ?? process.cwd();
+  const isExecutable = options.isExecutable ?? defaultIsExecutable;
   platformSupport(platform, arch);
 
   const requested = env.CODELINK_CODEX_BIN?.trim();
   const entries = [];
-  if (requested) entries.push(requested);
+  if (requested) {
+    entries.push(
+      findCommandOnPath(requested, { platform, env, exists }) ?? requested,
+    );
+  }
   if (!requested && platform === "darwin") {
     entries.push(
       "/Applications/ChatGPT.app/Contents/Resources/codex",
@@ -223,27 +284,78 @@ export function resolveCodexExecutable(options = {}) {
     if (onPath) entries.push(onPath);
   }
 
+  let foundNonExecutable = false;
   for (const entry of entries) {
-    const nativeCandidates = codexNativeCandidates(entry, {
+    const normalizedEntry = normalizeAbsolutePath(entry, {
+      platform,
+      cwd,
+      realpath,
+    });
+    const nativeCandidates = codexNativeCandidates(normalizedEntry, {
       platform,
       arch,
       realpath,
     });
     for (const candidate of nativeCandidates) {
-      if (exists(candidate)) return candidate;
+      const normalizedCandidate = normalizeAbsolutePath(candidate, {
+        platform,
+        cwd,
+        realpath,
+      });
+      if (!exists(normalizedCandidate)) continue;
+      if (!isExecutable(normalizedCandidate)) {
+        foundNonExecutable = true;
+        continue;
+      }
+      return normalizedCandidate;
     }
     if (
       nativeCandidates.length === 0 &&
-      exists(entry) &&
-      !/\.(?:cmd|bat)$/i.test(entry)
-    )
-      return entry;
+      exists(normalizedEntry) &&
+      !/\.(?:cmd|bat)$/i.test(normalizedEntry)
+    ) {
+      if (!isExecutable(normalizedEntry)) {
+        foundNonExecutable = true;
+        continue;
+      }
+      return normalizedEntry;
+    }
+  }
+
+  if (foundNonExecutable) {
+    throw new Error(
+      "找到 Codex 原生二进制，但文件不可执行；请修复权限或设置 CODELINK_CODEX_BIN。",
+    );
   }
 
   throw new Error(
     "未找到可供后台服务直接启动的 Codex 原生二进制。" +
       "请安装并登录 Codex CLI，或设置 CODELINK_CODEX_BIN 为 codex/codex.exe 的绝对路径。",
   );
+}
+
+function normalizeAbsolutePath(candidate, options) {
+  const pathApi = options.platform === "win32" ? path.win32 : path.posix;
+  const absolute = pathApi.isAbsolute(candidate)
+    ? candidate
+    : pathApi.resolve(options.cwd, candidate);
+  try {
+    const resolved = options.realpath(absolute);
+    return pathApi.isAbsolute(resolved)
+      ? resolved
+      : pathApi.resolve(options.cwd, resolved);
+  } catch {
+    return absolute;
+  }
+}
+
+function defaultIsExecutable(candidate) {
+  try {
+    fs.accessSync(candidate, fs.constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function resolveNpmExecutable(options = {}) {

@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
@@ -11,6 +12,7 @@ import {
   resolveCodexExecutable,
   resolveNpmInvocation,
   serviceInstaller,
+  serviceUninstaller,
 } from "../scripts/setup-lib.mjs";
 import { renderLaunchAgent } from "../scripts/render-launch-agent.mjs";
 
@@ -50,17 +52,80 @@ describe("跨平台安装计划", () => {
     );
   });
 
-  it("安全转义 LaunchAgent 路径中的 XML 特殊字符", () => {
+  it("为三个系统选择共享生命周期使用的卸载适配器", () => {
+    expect(
+      serviceUninstaller("darwin", "/scripts").argsForPhase("stop"),
+    ).toEqual(["/scripts/uninstall-launch-agent.sh", "--service-stop"]);
+    expect(
+      serviceUninstaller("linux", "/scripts").argsForPhase("cleanup"),
+    ).toEqual(["/scripts/uninstall-systemd-user.sh", "--service-cleanup"]);
+    expect(
+      serviceUninstaller("win32", "C:\\scripts", {
+        SystemRoot: "C:\\Windows",
+      }).argsForPhase("stop"),
+    ).toEqual([
+      "-NoProfile",
+      "-NonInteractive",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      "C:\\scripts\\uninstall-scheduled-task.ps1",
+      "-Phase",
+      "stop",
+    ]);
+  });
+
+  it("完整 LaunchAgent 对特殊路径做 XML 回环并通过 plutil", () => {
+    const template = fs.readFileSync(
+      path.resolve("scripts/launch-agent.plist.template"),
+      "utf8",
+    );
+    const codexBin = '/Applications/Code & <Tool>/"Codex"\'/codex';
     const rendered = renderLaunchAgent(
-      "<string>__NODE_BIN__</string><string>__STATE_DIR__</string>",
+      template,
       {
-        NODE_BIN: "/Users/A&B/<node>",
-        STATE_DIR: '/Users/"owner"/.codelink',
+        LABEL: "ai.codelink.daemon",
+        NODE_BIN: '/Users/A&B/<node>/"runtime"\'/node',
+        CODEX_BIN: codexBin,
+        CLI_PATH: '/Users/A&B/<state>/runtime/"cli"\'/cli.cjs',
+        WORKDIR: '/Users/A&B/<state>/runtime',
+        LOG_DIR: '/Users/A&B/<logs>/"daemon"\'',
+        STATE_DIR: '/Users/A&B/<state>/"owner"\'',
       },
     );
-    expect(rendered).toBe(
-      "<string>/Users/A&amp;B/&lt;node&gt;</string><string>/Users/&quot;owner&quot;/.codelink</string>",
+    expect(rendered).not.toContain("__CODEX_BIN__");
+    expect(rendered).toContain(
+      "/Applications/Code &amp; &lt;Tool&gt;/&quot;Codex&quot;&apos;/codex",
     );
+
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "codelink-plist-"));
+    const plistPath = path.join(directory, "ai.codelink.daemon.plist");
+    try {
+      fs.writeFileSync(plistPath, rendered);
+      const lint = spawnSync("plutil", ["-lint", plistPath], {
+        encoding: "utf8",
+      });
+      if (lint.error?.code !== "ENOENT") {
+        expect(lint.stderr).toBe("");
+        expect(lint.status).toBe(0);
+        const extracted = spawnSync(
+          "plutil",
+          [
+            "-extract",
+            "EnvironmentVariables.CODELINK_CODEX_BIN",
+            "raw",
+            "-o",
+            "-",
+            plistPath,
+          ],
+          { encoding: "utf8" },
+        );
+        expect(extracted.status).toBe(0);
+        expect(extracted.stdout.trim()).toBe(codexBin);
+      }
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it("解析无副作用安装参数", () => {
@@ -88,6 +153,54 @@ describe("小白安装契约", () => {
 });
 
 describe("Codex 可执行文件解析", () => {
+  it("把标准 PATH 与相对 override 都规范化为可执行绝对路径", () => {
+    const existing = new Set([
+      "tools/codex",
+      "relative/codex",
+      "/repo/tools/codex",
+      "/repo/relative/codex",
+    ]);
+    const realpath = (candidate) =>
+      candidate.startsWith("/") ? candidate : `/repo/${candidate}`;
+    const isExecutable = (candidate) => existing.has(candidate);
+
+    expect(
+      resolveCodexExecutable({
+        platform: "linux",
+        arch: "x64",
+        env: { PATH: "tools" },
+        cwd: "/repo",
+        exists: (candidate) => existing.has(candidate),
+        realpath,
+        isExecutable,
+      }),
+    ).toBe("/repo/tools/codex");
+    expect(
+      resolveCodexExecutable({
+        platform: "linux",
+        arch: "x64",
+        env: { CODELINK_CODEX_BIN: "relative/codex" },
+        cwd: "/repo",
+        exists: (candidate) => existing.has(candidate),
+        realpath,
+        isExecutable,
+      }),
+    ).toBe("/repo/relative/codex");
+  });
+
+  it("拒绝存在但不可执行的 Codex 文件", () => {
+    expect(() =>
+      resolveCodexExecutable({
+        platform: "linux",
+        arch: "x64",
+        env: { CODELINK_CODEX_BIN: "/tools/codex" },
+        exists: () => true,
+        realpath: (candidate) => candidate,
+        isExecutable: () => false,
+      }),
+    ).toThrow("不可执行");
+  });
+
   it("按 Windows PATHEXT 找到 codex.cmd", () => {
     const existing = new Set(["C:\\Tools\\codex.cmd"]);
     expect(
@@ -124,6 +237,7 @@ describe("Codex 可执行文件解析", () => {
         arch: "x64",
         env: { PATH: "C:\\Tools", PATHEXT: ".EXE;.CMD" },
         exists: (candidate) => existing.has(candidate),
+        isExecutable: (candidate) => existing.has(candidate),
         realpath: (value) => value,
       }),
     ).toBe(native);
@@ -169,6 +283,65 @@ describe("npm 调用解析", () => {
 });
 
 describe("安装脚本语法", () => {
+  it("systemd unit 对含空格、引号和百分号的路径保持原值", () => {
+    if (!hasSh) return;
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "codelink-systemd-"));
+    try {
+      const pluginRoot = path.join(root, 'plugin & <bundle> "quoted"');
+      const scriptsDir = path.join(pluginRoot, "scripts");
+      const fakeBin = path.join(root, 'bin % "tools"');
+      const stateDir = path.join(root, 'state % "owner"');
+      const xdgDir = path.join(root, 'config % "owner"');
+      const nodeBin = path.join(fakeBin, 'node % "22"');
+      const codexBin = path.join(fakeBin, 'codex % "native"');
+      fs.mkdirSync(path.join(pluginRoot, "dist"), { recursive: true });
+      fs.mkdirSync(scriptsDir, { recursive: true });
+      fs.mkdirSync(fakeBin, { recursive: true });
+      fs.copyFileSync(
+        path.resolve("scripts/install-systemd-user.sh"),
+        path.join(scriptsDir, "install-systemd-user.sh"),
+      );
+      fs.writeFileSync(path.join(pluginRoot, "dist", "cli.cjs"), "runtime\n");
+      for (const executable of ["systemctl", nodeBin, codexBin]) {
+        const destination = path.isAbsolute(executable)
+          ? executable
+          : path.join(fakeBin, executable);
+        fs.writeFileSync(destination, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+      }
+
+      const result = spawnSync(
+        "sh",
+        [path.join(scriptsDir, "install-systemd-user.sh")],
+        {
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            PATH: `${fakeBin}${path.delimiter}${process.env.PATH ?? "/usr/bin:/bin"}`,
+            CODELINK_CODEX_BIN: codexBin,
+            CODELINK_NODE_BIN: nodeBin,
+            CODELINK_STATE_DIR: stateDir,
+            XDG_CONFIG_HOME: xdgDir,
+          },
+        },
+      );
+      expect(result.status, result.stderr).toBe(0);
+      const unit = fs.readFileSync(
+        path.join(xdgDir, "systemd", "user", "ai.codelink.daemon.service"),
+        "utf8",
+      );
+      expect(unit).toContain(
+        `Environment="CODELINK_CODEX_BIN=${systemdEscape(codexBin)}"`,
+      );
+      expect(unit).toContain(
+        `ExecStart="${systemdEscape(nodeBin)}" "${systemdEscape(
+          path.join(stateDir, "runtime", "cli.cjs"),
+        )}" daemon`,
+      );
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it.each([
     "setup.sh",
     "install-launch-agent.sh",
@@ -221,3 +394,7 @@ describe("安装脚本语法", () => {
     }
   });
 });
+
+function systemdEscape(value) {
+  return value.replaceAll("\\", "\\\\").replaceAll('"', '\\"').replaceAll("%", "%%");
+}
