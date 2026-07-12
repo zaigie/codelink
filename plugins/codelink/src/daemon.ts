@@ -86,7 +86,7 @@ export class CodelinkDaemon {
     process.stderr.write(
       `CodeLink daemon API: http://${this.config.daemon.host}:${this.config.daemon.port}\n`,
     );
-    process.stderr.write(`WeChat account: ${session.accountId}\n`);
+    process.stderr.write("WeChat session: loaded\n");
     const recovered = this.recoverPendingTasks(session);
     const recoveredDeliveries = this.recoverPendingDeliveries(session);
     if (recovered > 0 || recoveredDeliveries > 0) {
@@ -814,6 +814,15 @@ export class CodelinkDaemon {
       if (request.method === "GET" && request.url === "/health") {
         const status = this.getStatus();
         return this.json(response, status.ok ? 200 : 503, status);
+      }
+      if (request.method === "GET" && request.url === "/healthz") {
+        const status = this.getStatus();
+        return this.json(response, status.ok ? 200 : 503, {
+          service: "codelink",
+          ok: status.ok,
+          degraded: status.degraded,
+          sessionExpired: status.sessionExpired,
+        });
       }
       if (request.method === "GET" && request.url?.startsWith("/tasks")) {
         return this.json(response, 200, { tasks: this.getRecentTasks() });

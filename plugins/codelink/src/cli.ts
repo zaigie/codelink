@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { CodexTaskRunner } from "./codex-task-runner.js";
 import { CodelinkDaemon } from "./daemon.js";
 import { DaemonClient } from "./daemon-client.js";
+import { createDoctorReport } from "./doctor.js";
 import { exportOpenClawState, importOpenClawState } from "./openclaw-state.js";
 import { StateStore } from "./state.js";
 import { WeixinClient } from "./weixin/client.js";
@@ -19,10 +20,12 @@ async function main(): Promise<void> {
   switch (command) {
     case "login": {
       const client = new WeixinClient(config.weixin);
+      const qrOutput = readQrOutput(args);
       await loginWithQr({
         client,
         store,
         legacyGet: args.includes("--legacy-get"),
+        qrOutput,
       });
       return;
     }
@@ -40,6 +43,16 @@ async function main(): Promise<void> {
     }
     case "status": {
       printJson(await new DaemonClient().status());
+      return;
+    }
+    case "doctor": {
+      let daemonStatus: unknown = null;
+      try {
+        daemonStatus = await new DaemonClient().status();
+      } catch {
+        // Offline is a doctor result, not a CLI crash.
+      }
+      printJson(createDoctorReport({ store, daemonStatus }));
       return;
     }
     case "tasks": {
@@ -133,9 +146,11 @@ function helpText(): string {
   return (
     `CodeLink 0.1.0\n\n` +
     `用法：\n` +
-    `  codelink login [--legacy-get]  显示微信二维码并保存登录凭证\n` +
-    `  codelink daemon         前台运行微信监听与本地通知 API\n` +
-    `  codelink status         检查守护进程和微信连接\n` +
+      `  codelink login [--legacy-get] [--qr-output png|terminal|both]\n` +
+      `                           显示微信二维码并保存登录凭证\n` +
+      `  codelink daemon         前台运行微信监听与本地通知 API\n` +
+      `  codelink status         检查守护进程和微信连接\n` +
+      `  codelink doctor         安全检查安装、插件、微信和通知就绪状态\n` +
     `  codelink tasks          查看最近由微信发起或续接的 Codex 记录\n` +
     `  codelink task <文字>    本地创建新的 CodeLink Codex 会话\n` +
     `  codelink send <文字>    向默认微信用户发送通知\n` +
@@ -143,6 +158,16 @@ function helpText(): string {
     `  codelink export-openclaw <文件> [目录]  从云端 OpenClaw 导出最小微信状态包\n` +
     `  codelink import-openclaw <文件>         导入云端微信状态包\n`
   );
+}
+
+function readQrOutput(args: string[]): "png" | "terminal" | "both" {
+  const index = args.indexOf("--qr-output");
+  const value = index >= 0 ? args[index + 1] : process.env.CODELINK_QR_OUTPUT;
+  if (value === undefined || value === "") return "both";
+  if (value === "png" || value === "terminal" || value === "both") {
+    return value;
+  }
+  throw new Error("--qr-output 必须是 png、terminal 或 both");
 }
 
 main().catch((error) => {

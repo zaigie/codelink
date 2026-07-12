@@ -8,8 +8,6 @@
 
 ```bash
 cd plugins/codelink
-npm ci
-npm run build
 node dist/cli.cjs export-openclaw /tmp/codelink-weixin-export.json ~/.openclaw
 ```
 

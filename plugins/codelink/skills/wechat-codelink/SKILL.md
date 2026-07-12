@@ -7,6 +7,8 @@ description: Use CodeLink when the user asks Codex to notify them on WeChat, bin
 
 CodeLink exposes tools from the `codelink` MCP server. Use the smallest tool that satisfies the request.
 
+If the CodeLink skill is visible but its MCP tools are not, do not describe the installation as broken based only on the current task. Explain that plugin tools are loaded at task creation, ask the user to create a new Codex task, and recommend restarting Codex App if a new task still lacks the tools. The safe local fallback is `node ~/.codelink/runtime/cli.cjs doctor`; it distinguishes plugin/runtime readiness from daemon and WeChat readiness without exposing identifiers. Never bypass a missing MCP tool by calling the daemon HTTP API directly for a write action.
+
 ## Send and bind
 
 - Use `send_wechat_message` only when the user explicitly asks to send, notify, report, summarize, or continue through WeChat.

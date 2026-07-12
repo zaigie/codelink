@@ -1,5 +1,31 @@
 import fs from "node:fs";
 import path from "node:path";
+import { createHash } from "node:crypto";
+
+export const RUNTIME_PAYLOAD_FILES = ["cli.cjs", "mcp.js"];
+export const RUNTIME_MANIFEST_FILE = "runtime-manifest.json";
+
+export function classifyPortResponse(statusCode, body) {
+  try {
+    const value = JSON.parse(body);
+    if (!value || typeof value !== "object") return "occupied";
+    if (value.service === "codelink") return "codelink";
+    const keys = Object.keys(value);
+    if (
+      typeof value.ok === "boolean" &&
+      keys.every((key) => key === "ok")
+    ) {
+      return "codelink";
+    }
+  } catch {
+    // A non-JSON response belongs to another service.
+  }
+  return "occupied";
+}
+
+export function classifyPortError(code) {
+  return code === "ECONNREFUSED" ? "available" : "transient";
+}
 
 const CODEX_TARGETS = {
   "darwin:x64": {
@@ -92,6 +118,7 @@ export function parseSetupArgs(args) {
     dryRun: false,
     login: true,
     service: true,
+    build: false,
     help: false,
   };
 
@@ -106,6 +133,9 @@ export function parseSetupArgs(args) {
       case "--no-service":
         options.service = false;
         break;
+      case "--build":
+        options.build = true;
+        break;
       case "--help":
       case "-h":
         options.help = true;
@@ -115,6 +145,94 @@ export function parseSetupArgs(args) {
     }
   }
   return options;
+}
+
+export function validateRuntimeArtifacts(pluginDir) {
+  const distDir = path.join(pluginDir, "dist");
+  const manifestPath = path.join(distDir, RUNTIME_MANIFEST_FILE);
+  let manifest;
+  try {
+    manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+  } catch {
+    return {
+      valid: false,
+      code: "E_RUNTIME_MANIFEST_MISSING",
+      manifest: manifestPath,
+    };
+  }
+  if (
+    manifest?.schemaVersion !== 1 ||
+    !manifest.files ||
+    typeof manifest.files !== "object"
+  ) {
+    return {
+      valid: false,
+      code: "E_RUNTIME_MANIFEST_INVALID",
+      manifest: manifestPath,
+    };
+  }
+
+  for (const name of RUNTIME_PAYLOAD_FILES) {
+    const expected = manifest.files[name];
+    const filePath = path.join(distDir, name);
+    if (typeof expected !== "string" || !fs.existsSync(filePath)) {
+      return { valid: false, code: "E_RUNTIME_FILE_MISSING", file: name };
+    }
+    const actual = createHash("sha256")
+      .update(fs.readFileSync(filePath))
+      .digest("hex");
+    if (actual !== expected) {
+      return {
+        valid: false,
+        code: "E_RUNTIME_HASH_MISMATCH",
+        file: name,
+      };
+    }
+  }
+  return { valid: true, code: "OK" };
+}
+
+export function installRuntimeArtifacts(pluginDir, stateDir) {
+  const sourceDir = path.join(pluginDir, "dist");
+  const runtimeDir = path.join(stateDir, "runtime");
+  fs.mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+  fs.mkdirSync(runtimeDir, { recursive: true, mode: 0o700 });
+  try {
+    fs.chmodSync(stateDir, 0o700);
+    fs.chmodSync(runtimeDir, 0o700);
+  } catch {
+    // Best effort on filesystems without POSIX permissions.
+  }
+  for (const name of [...RUNTIME_PAYLOAD_FILES, RUNTIME_MANIFEST_FILE]) {
+    const target = path.join(runtimeDir, name);
+    const temp = `${target}.${process.pid}.tmp`;
+    fs.copyFileSync(path.join(sourceDir, name), temp);
+    fs.renameSync(temp, target);
+    try {
+      fs.chmodSync(target, name === "cli.cjs" ? 0o700 : 0o600);
+    } catch {
+      // Best effort on filesystems without POSIX permissions.
+    }
+  }
+}
+
+export function installationFailure({
+  code,
+  command,
+  status,
+  nextStep,
+}) {
+  return new Error(
+    `${code}：${path.basename(command)} 执行失败（退出码 ${status}）。${nextStep}`,
+  );
+}
+
+export function normalizeInstallationError(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  if (/^E_[A-Z0-9_]+：/.test(message)) return new Error(message);
+  return new Error(
+    `E_INSTALL_UNEXPECTED：${message}。请检查安装日志和 INSTALL.md 后重试。`,
+  );
 }
 
 export function findCommandOnPath(command, options = {}) {

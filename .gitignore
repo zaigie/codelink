@@ -1,6 +1,9 @@
 node_modules/
 plugins/codelink/node_modules/
-plugins/codelink/dist/
+plugins/codelink/dist/*
+!plugins/codelink/dist/cli.cjs
+!plugins/codelink/dist/mcp.js
+!plugins/codelink/dist/runtime-manifest.json
 coverage/
 .venv/
 .bootstrap/

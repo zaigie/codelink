@@ -79,7 +79,7 @@ daemon 在接受任务时记录消息到达时的绑定，保证这条微信消�
 
 ## 独立登录
 
-默认登录直接调用腾讯 iLink 二维码接口。空 CodeLink 状态使用空 `local_token_list`，不读取 `~/.openclaw`。二维码过期时在同一登录超时窗口内自动获取新码、重写 PNG 并再次触发展示回调。OpenClaw 导入导出只用于用户明确要求保留既有 Bot 身份的可选迁移。
+默认登录直接调用腾讯 iLink 二维码接口。空 CodeLink 状态使用空 `local_token_list`，不读取 `~/.openclaw`。二维码过期时在同一登录超时窗口内自动获取新码、重写 PNG 并再次触发展示回调。安装器使用 PNG-only 输出，避免可扫码内容进入终端日志；成功或超时后清理短期 PNG。直接 CLI 登录仍保留终端二维码兼容模式。OpenClaw 导入导出只用于用户明确要求保留既有 Bot 身份的可选迁移。
 
 ## 跨平台运行与常驻
 
@@ -90,7 +90,7 @@ daemon、MCP 和状态存储只使用 Node.js API 与纯 JavaScript 依赖，不
 - Windows 用当前用户 Scheduled Task；
 - 不具备上述服务管理器时，daemon 仍可由其他进程管理器前台启动。
 
-统一安装器根据 `process.platform/process.arch` 匹配官方 Codex 的 x64/arm64 target，并解析 npm wrapper 后面的原生 `codex`/`codex.exe`。Node 与 Codex 的绝对路径会写进服务环境，避免后台会话与交互式 shell 的 PATH 不一致。当前未承诺的架构是官方 Codex 没有对应原生 target 的组合，而不是 CodeLink 主动限制操作系统。
+统一安装器根据 `process.platform/process.arch` 匹配官方 Codex 的 x64/arm64 target，并解析 npm wrapper 后面的原生 `codex`/`codex.exe`。用户安装消费仓库中预构建的 `cli.cjs`/`mcp.js`，先用提交的 SHA-256 清单校验，因此 Codex App 内置的独立 Node 即使没有 npm 也能安装；npm 只保留给显式 `--build` 开发流程。Node 与 Codex 的绝对路径会写进服务环境，避免后台会话与交互式 shell 的 PATH 不一致。安装成功后写入无用户标识的私有回执，`doctor` 将 runtime、插件/MCP、daemon、微信 session 和通知上下文分层报告。当前未承诺的架构是官方 Codex 没有对应原生 target 的组合，而不是 CodeLink 主动限制操作系统。
 
 ## HITL
 

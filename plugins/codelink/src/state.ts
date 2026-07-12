@@ -16,6 +16,16 @@ export type ContextTokenRecord = {
   updatedAt: string;
 };
 
+export type InstallReceipt = {
+  schemaVersion: 1;
+  pluginInstalled: boolean;
+  mcpBundleReady: boolean;
+  pluginRoot: string;
+  pluginVersion: string;
+  mcpSha256: string;
+  installedAt: string;
+};
+
 export type ConversationBinding = {
   threadId: string;
   updatedAt: string;
@@ -102,6 +112,14 @@ export class StateStore {
 
   saveSession(session: WeixinSession): void {
     this.writeJson("weixin-session.json", session, 0o600);
+  }
+
+  loadInstallReceipt(): InstallReceipt | null {
+    return this.readJson("install-receipt.json") as InstallReceipt | null;
+  }
+
+  saveInstallReceipt(receipt: InstallReceipt): void {
+    this.writeJson("install-receipt.json", receipt, 0o600);
   }
 
   loadSyncCursor(): string {

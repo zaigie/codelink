@@ -3,6 +3,21 @@ import { describe, expect, it, vi } from "vitest";
 import { DaemonClient } from "../src/daemon-client.js";
 
 describe("DaemonClient", () => {
+  it("uses the identifier-free health endpoint for installation checks", async () => {
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    const client = new DaemonClient({
+      baseUrl: "http://127.0.0.1:18791",
+      fetchImpl: fetchMock,
+    });
+
+    await expect(client.health()).resolves.toEqual({ ok: true });
+    expect(String(fetchMock.mock.calls[0][0])).toBe(
+      "http://127.0.0.1:18791/healthz",
+    );
+  });
+
   it("returns degraded health details even when the daemon responds 503", async () => {
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(

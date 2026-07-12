@@ -5,12 +5,18 @@ import { describe, expect, it } from "vitest";
 
 import {
   codexNativeCandidates,
+  classifyPortResponse,
+  classifyPortError,
   findCommandOnPath,
+  installRuntimeArtifacts,
+  installationFailure,
+  normalizeInstallationError,
   parseSetupArgs,
   platformSupport,
   resolveCodexExecutable,
   resolveNpmInvocation,
   serviceInstaller,
+  validateRuntimeArtifacts,
 } from "../scripts/setup-lib.mjs";
 import { renderLaunchAgent } from "../scripts/render-launch-agent.mjs";
 
@@ -64,9 +70,167 @@ describe("跨平台安装计划", () => {
   });
 
   it("解析无副作用安装参数", () => {
-    expect(parseSetupArgs(["--dry-run", "--no-login", "--no-service"])).toEqual(
-      { dryRun: true, login: false, service: false, help: false },
+    expect(
+      parseSetupArgs([
+        "--dry-run",
+        "--no-login",
+        "--no-service",
+        "--build",
+      ]),
+    ).toEqual({
+      dryRun: true,
+      login: false,
+      service: false,
+      build: true,
+      help: false,
+    });
+  });
+
+  it("只有显式 --build 才要求 npm，普通预检可使用预构建运行时", () => {
+    const pluginRoot = path.resolve(import.meta.dirname, "..");
+    const result = spawnSync(
+      process.execPath,
+      [path.join(pluginRoot, "scripts", "setup.mjs"), "--dry-run"],
+      {
+        cwd: pluginRoot,
+        env: {
+          ...process.env,
+          PATH: "",
+          CODELINK_CODEX_BIN: process.execPath,
+        },
+        encoding: "utf8",
+      },
     );
+
+    expect(result.status).toBe(1);
+    const summary = JSON.parse(result.stdout);
+    expect(summary).toMatchObject({
+      ok: false,
+      installMode: "prebuilt",
+      runtime: { valid: true },
+      codexCapabilities: { plugin: false, appServer: false },
+    });
+    expect(summary.diagnostics.map(({ code }) => code)).toContain(
+      "E_CODEX_PLUGIN_UNSUPPORTED",
+    );
+    expect(summary.nodeVersion).toMatch(/^v\d+/);
+    expect(summary.codexVersion).toBeTruthy();
+    if (summary.npm.available) expect(summary.npm.version).toMatch(/^\d+\./);
+  });
+});
+
+describe("端口预检", () => {
+  it("区分现有 CodeLink 和占用同端口的未知服务", () => {
+    expect(
+      classifyPortResponse(200, JSON.stringify({ service: "codelink", ok: true })),
+    ).toBe("codelink");
+    expect(classifyPortResponse(503, JSON.stringify({ ok: false }))).toBe(
+      "codelink",
+    );
+    expect(classifyPortResponse(200, "<html>other service</html>")).toBe(
+      "occupied",
+    );
+  });
+
+  it("服务重启期间的连接重置是可重试状态，不误报端口占用", () => {
+    expect(classifyPortError("ECONNREFUSED")).toBe("available");
+    expect(classifyPortError("ECONNRESET")).toBe("transient");
+    expect(classifyPortError("ETIMEDOUT")).toBe("transient");
+  });
+});
+
+describe("预构建运行时", () => {
+  it("校验清单中的两个运行时文件并拒绝被篡改的内容", () => {
+    const pluginDir = fs.mkdtempSync(path.join(import.meta.dirname, "runtime-"));
+    try {
+      const distDir = path.join(pluginDir, "dist");
+      fs.mkdirSync(distDir);
+      fs.writeFileSync(path.join(distDir, "cli.cjs"), "cli");
+      fs.writeFileSync(path.join(distDir, "mcp.js"), "mcp");
+      fs.writeFileSync(
+        path.join(distDir, "runtime-manifest.json"),
+        JSON.stringify({
+          schemaVersion: 1,
+          files: {
+            "cli.cjs":
+              "99bb88401742848e032fd6f51709415fb6be169a72d2e5d7fc44289255160d3c",
+            "mcp.js":
+              "10182ab855ff772753c05b2fea333666b5f312835d32936b6b03e08ef2cbd6d3",
+          },
+        }),
+      );
+
+      expect(validateRuntimeArtifacts(pluginDir)).toMatchObject({ valid: true });
+      fs.writeFileSync(path.join(distDir, "cli.cjs"), "changed");
+      expect(validateRuntimeArtifacts(pluginDir)).toMatchObject({
+        valid: false,
+        code: "E_RUNTIME_HASH_MISMATCH",
+      });
+    } finally {
+      fs.rmSync(pluginDir, { recursive: true, force: true });
+    }
+  });
+
+  it("无服务安装也复制最小运行时，并保留已有用户状态", () => {
+    const root = fs.mkdtempSync(path.join(import.meta.dirname, "install-"));
+    try {
+      const pluginDir = path.join(root, "plugin");
+      const stateDir = path.join(root, "state");
+      fs.mkdirSync(path.join(pluginDir, "dist"), { recursive: true });
+      fs.mkdirSync(stateDir, { recursive: true, mode: 0o755 });
+      if (process.platform !== "win32") fs.chmodSync(stateDir, 0o755);
+      for (const [name, content] of [
+        ["cli.cjs", "cli"],
+        ["mcp.js", "mcp"],
+        ["runtime-manifest.json", "manifest"],
+      ]) {
+        fs.writeFileSync(path.join(pluginDir, "dist", name), content);
+      }
+      fs.writeFileSync(path.join(stateDir, "weixin-session.json"), "session");
+
+      installRuntimeArtifacts(pluginDir, stateDir);
+
+      expect(fs.readFileSync(path.join(stateDir, "runtime", "cli.cjs"), "utf8"))
+        .toBe("cli");
+      expect(fs.readFileSync(path.join(stateDir, "runtime", "mcp.js"), "utf8"))
+        .toBe("mcp");
+      expect(fs.readFileSync(path.join(stateDir, "weixin-session.json"), "utf8"))
+        .toBe("session");
+      if (process.platform !== "win32") {
+        expect(fs.statSync(stateDir).mode & 0o777).toBe(0o700);
+        expect(fs.statSync(path.join(stateDir, "runtime")).mode & 0o777).toBe(
+          0o700,
+        );
+      }
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("安装失败摘要", () => {
+  it("包含稳定错误码、失败命令和可执行下一步", () => {
+    expect(
+      installationFailure({
+        code: "E_PLUGIN_INSTALL_FAILED",
+        command: "/Applications/Codex/codex",
+        status: 7,
+        nextStep: "请新建任务后重试插件安装。",
+      }).message,
+    ).toBe(
+      "E_PLUGIN_INSTALL_FAILED：codex 执行失败（退出码 7）。请新建任务后重试插件安装。",
+    );
+  });
+
+  it("为未分类异常补充通用错误码，同时保留已有稳定错误码", () => {
+    expect(normalizeInstallationError(new Error("spawn failed")).message).toBe(
+      "E_INSTALL_UNEXPECTED：spawn failed。请检查安装日志和 INSTALL.md 后重试。",
+    );
+    expect(
+      normalizeInstallationError(
+        new Error("E_PORT_OCCUPIED：端口被占用；请释放端口。"),
+      ).message,
+    ).toBe("E_PORT_OCCUPIED：端口被占用；请释放端口。");
   });
 });
 
@@ -83,7 +247,38 @@ describe("小白安装契约", () => {
       expect(document).toContain("主会话");
     }
     expect(install).toContain("不能只打印文件路径");
-    expect(prompt).toContain("不要把图片藏在需要展开的执行过程里");
+    expect(prompt).toContain(
+      "https://github.com/zaigie/codelink/blob/main/INSTALL.md",
+    );
+  });
+
+  it("把历史工程经验固化为仓库级开发约定", () => {
+    const repoRoot = path.resolve(import.meta.dirname, "..", "..", "..");
+    const agents = fs.readFileSync(path.join(repoRoot, "AGENTS.md"), "utf8");
+
+    for (const rule of [
+      "纵向红绿切片",
+      "保留 `~/.codelink`",
+      "update_plugin_cachebuster.py",
+      "重新安装 `codelink@codelink-local`",
+      "新建 Codex 任务",
+    ]) {
+      expect(agents).toContain(rule);
+    }
+  });
+
+  it("CI 明确检查 macOS/Linux 的 x64 与 arm64 依赖解析", () => {
+    const repoRoot = path.resolve(import.meta.dirname, "..", "..", "..");
+    const workflow = fs.readFileSync(
+      path.join(repoRoot, ".github", "workflows", "ci.yml"),
+      "utf8",
+    );
+
+    for (const value of ["dependency-resolution", "darwin", "linux", "x64", "arm64"]) {
+      expect(workflow).toContain(value);
+    }
+    expect(workflow).toContain("npm_config_os");
+    expect(workflow).toContain("npm_config_cpu");
   });
 });
 
@@ -147,6 +342,17 @@ describe("Codex 可执行文件解析", () => {
 });
 
 describe("npm 调用解析", () => {
+  it("允许只有 Node、没有 npm 的 Codex 内置运行时", () => {
+    expect(
+      resolveNpmInvocation({
+        platform: "darwin",
+        env: { PATH: "" },
+        processExecPath: "/codex-runtime/bin/node",
+        exists: (candidate) => candidate === "/codex-runtime/bin/node",
+      }),
+    ).toBeNull();
+  });
+
   it("在 Windows 通过 node 直接执行带空格路径旁的 npm-cli.js", () => {
     const node = "C:\\Program Files\\nodejs\\node.exe";
     const wrapper = "C:\\Program Files\\nodejs\\npm.cmd";

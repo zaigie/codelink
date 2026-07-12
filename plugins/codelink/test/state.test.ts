@@ -39,6 +39,39 @@ describe("StateStore", () => {
     );
   });
 
+  it("记录安装状态时保留微信 session，并使用私有权限", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "codelink-state-"));
+    cleanup.push(dir);
+    const store = new StateStore(dir);
+    store.saveSession({
+      accountId: "bot",
+      token: "secret-token",
+      userId: "owner",
+      baseUrl: "https://ilinkai.weixin.qq.com",
+      savedAt: "2026-07-12T00:00:00.000Z",
+    });
+
+    store.saveInstallReceipt({
+      schemaVersion: 1,
+      pluginInstalled: true,
+      mcpBundleReady: true,
+      pluginRoot: "/private/plugin-cache",
+      pluginVersion: "0.1.0+codex.test",
+      mcpSha256:
+        "1e6ed65d77d6364eeaed5a745ba5c4985ae2b700dd85d7cf7f027bdf294a33fc",
+      installedAt: "2026-07-12T00:01:00.000Z",
+    });
+
+    expect(store.loadSession()?.token).toBe("secret-token");
+    expect(store.loadInstallReceipt()).toMatchObject({
+      pluginInstalled: true,
+      mcpBundleReady: true,
+    });
+    expect(fs.statSync(store.path("install-receipt.json")).mode & 0o777).toBe(
+      0o600,
+    );
+  });
+
   it("deduplicates tasks by message id", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "codelink-state-"));
     cleanup.push(dir);

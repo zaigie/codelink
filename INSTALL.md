@@ -23,13 +23,15 @@ CodeLink 核心由 Node.js 和纯 JavaScript 依赖组成，不含原生扩展�
 
 macOS 常驻路线已经实机运行。Linux 与 Windows 安装器具备纯函数、`--dry-run` 和脚本语法测试，但在正式标记稳定前仍需各完成一次对应系统的真实注册、重启和卸载回归。安装时应如实报告实际验收结果，不把静态测试描述成跨平台实机验证。
 
-依赖要求：
+普通安装依赖：
 
-- Node.js 22 或更高版本，并包含 npm；
+- Node.js 22 或更高版本；Codex App 内置的独立 `node` 可直接使用，不要求同时包含 npm；
 - Git；
 - 已安装并登录的 Codex，且其二进制支持 `plugin` 与 `app-server`；
-- 可访问 GitHub、npm 和腾讯 iLink；
+- 可访问 GitHub 和腾讯 iLink；
 - 可使用微信 ClawBot/iLink 的微信账号。
+
+仓库内包含经过 SHA-256 清单校验的预构建 MCP/CLI 运行时。只有开发者明确使用 `--build` 时才要求 npm；开发依赖固定为 `npm@10.9.8`，不得在用户机器上自举 npm latest。
 
 安装器会解析 npm 安装的 Codex wrapper，并把对应的 `codex`/`codex.exe` 原生二进制绝对路径保存到后台服务环境中。因此 NVM、用户级 npm 和 Windows `codex.cmd` 不会因为后台 PATH 不同而成为系统限制。若使用自定义安装，可预先设置 `CODELINK_CODEX_BIN` 为原生二进制绝对路径。
 
@@ -37,7 +39,7 @@ macOS 常驻路线已经实机运行。Linux 与 Windows 安装器具备纯函�
 
 ### 1. 检查环境
 
-先只读检查操作系统、CPU 架构、`node --version`、`npm --version`、`git --version`，以及 PATH 中或 Codex App 内置二进制的 `codex --version`。Node 低于 22 或 Codex 尚未登录时，先向用户说明缺项；不要用 OpenClaw 绕过。
+先只读检查操作系统、CPU 架构、`node --version`、`git --version`，以及 PATH 中或 Codex App 内置二进制的 `codex --version`。npm 是可选开发依赖：存在时记录路径和版本，不存在不阻断普通安装。Node 低于 22 或 Codex 尚未登录时，先向用户说明缺项；不要用 OpenClaw 绕过。
 
 ### 2. 克隆或安全更新持久源码
 
@@ -79,7 +81,7 @@ if (Test-Path (Join-Path $SourceDir ".git")) {
 node <源码目录>/plugins/codelink/scripts/setup.mjs --dry-run
 ```
 
-预检应显示当前平台、架构、Codex 原生目标、源码位置和将采用的常驻方式。它不构建、不扫码、不修改插件配置，也不注册服务。
+预检应显示当前平台、架构、Node/Codex 路径和版本、可选 npm 路径和版本、`plugin`/`app-server` 命令能力、Codex 原生目标、源码与 runtime 目标、预构建运行时校验结果、现有插件状态、端口状态和将采用的常驻方式。失败项使用稳定错误码（例如 `E_CODEX_PLUGIN_UNSUPPORTED`、`E_PORT_OCCUPIED`）并给出下一步。它不构建、不扫码、不修改插件配置，也不注册服务。
 
 ### 4. 执行统一安装器
 
@@ -89,19 +91,20 @@ node <源码目录>/plugins/codelink/scripts/setup.mjs
 
 安装器会依次：
 
-1. `npm ci` 并构建单文件 MCP/CLI 运行时；
+1. 校验仓库内预构建 MCP/CLI 运行时的 SHA-256 清单，普通安装不运行 npm；
 2. 添加当前持久源码为本地 marketplace，并安装 `codelink` 插件；
 3. 若没有现有 CodeLink session，启动腾讯 iLink 登录；
 4. 复制最小运行时到 `~/.codelink/runtime`，注册当前系统的用户态后台服务；
-5. 通过 `127.0.0.1:18791/health` 验证 daemon。
+5. 通过不含用户标识的 `127.0.0.1:18791/healthz` 验证 daemon。
 
-登录期间，命令生成 `~/.codelink/login-qr.png`（或 `CODELINK_STATE_DIR` 下同名文件）后，Codex 必须立即读取该 PNG，并把二维码图片直接发在当前主会话中，然后暂停等待扫码。不能只打印文件路径、备用链接或终端二维码，也不能让用户展开执行过程才能看到图片；不得把二维码内容解析成文本输出。已有 `weixin-session.json` 时安装器会保留登录态并跳过扫码。
+登录期间，安装器使用 PNG-only 模式生成 `~/.codelink/login-qr.png`（或 `CODELINK_STATE_DIR` 下同名文件）。Codex 必须立即读取该 PNG，并把二维码图片直接发在当前主会话中，然后暂停等待扫码。不能只打印文件路径、备用链接或终端二维码，也不能让用户展开执行过程才能看到图片；不得把二维码内容解析成文本输出。二维码内容不会写入安装终端日志，登录成功或超时后会清理 PNG。已有 `weixin-session.json` 时安装器会保留登录态并跳过扫码。
 
 可选参数只用于明确场景：
 
 - `--no-login`：保留现有登录或开发预装；
 - `--no-service`：不注册后台服务，由现有进程管理器运行 `node dist/cli.cjs daemon`；
 - `--dry-run`：仅预检。
+- `--build`：仅供源码开发者使用 npm 重新安装依赖和构建；普通安装不要使用。
 
 旧的 `setup.sh` 仍可在 macOS/Linux 使用，但它只是上述 Node 安装器的兼容入口。Windows 直接运行 `setup.mjs`。
 
@@ -120,6 +123,14 @@ node <源码目录>/plugins/codelink/scripts/setup.mjs
 9. 发送一个需要数秒的微信请求，处理期间应显示原生“正在输入”，完成后只收到 Codex 正文，不出现消息 ID、thread ID 或“会话已回复”标签；
 10. `/new 新的问题` 的最终正文前只出现一次旧上下文不会带入的提示。
 
+安装器会写入不含用户标识的私有安装回执。可运行下面的安全自检；它只输出布尔状态，不输出账号、微信用户 ID、thread ID、token 或本地路径：
+
+```text
+node ~/.codelink/runtime/cli.cjs doctor
+```
+
+`daemonHealthy=true` 只说明后台与微信轮询正常；`pluginInstalled` 和 `mcpBundleReady` 说明插件及 MCP bundle 已安装。Codex 任务中的工具加载仍以“新建任务”为边界；新任务仍看不到 CodeLink 时，重启 Codex App 后再检查。
+
 检查服务状态时不要输出健康接口中的用户 ID，也不要读取或展示 session 文件内容。
 
 | 系统 | 状态与日志 |
@@ -130,7 +141,7 @@ node <源码目录>/plugins/codelink/scripts/setup.mjs
 
 ## 更新
 
-用户再次给 Codex 同一段安装提示即可。Codex 应对持久源码执行 `git pull --ff-only`，然后重新运行 `setup.mjs`。已有微信 session 会保留，不应要求重复扫码。更新完成后新建 Codex 任务加载新版插件。
+用户再次给 Codex 同一段安装提示即可。Codex 应对持久源码执行 `git pull --ff-only`，然后重新运行 `setup.mjs`。安装器替换预构建 runtime、重装本地插件并重启服务，但保留已有微信 session、同步游标、context token、会话绑定和任务记录，不应要求重复扫码。更新完成后新建 Codex 任务加载新版插件。
 
 ## 卸载后台服务
 
@@ -160,7 +171,7 @@ Windows: powershell -NoProfile -ExecutionPolicy Bypass -File <源码目录>\plug
 
 ### 二维码问题
 
-重新运行 `node <源码目录>/plugins/codelink/dist/cli.cjs login`。不要安装 OpenClaw，也不要复制其他机器的 token。只有明确迁移已有 OpenClaw Bot 身份时，才参考 [docs/OPENCLAW_MIGRATION.md](docs/OPENCLAW_MIGRATION.md)。
+重新运行 `node <源码目录>/plugins/codelink/dist/cli.cjs login`。直接在终端使用时默认同时显示终端二维码和 PNG；自动化安装应使用 `--qr-output png`。不要安装 OpenClaw，也不要复制其他机器的 token。只有明确迁移已有 OpenClaw Bot 身份时，才参考 [docs/OPENCLAW_MIGRATION.md](docs/OPENCLAW_MIGRATION.md)。
 
 ### 微信新会话没有出现在 Codex App 左侧
 

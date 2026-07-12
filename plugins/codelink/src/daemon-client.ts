@@ -25,6 +25,10 @@ export class DaemonClient {
     return this.request("/health", { method: "GET" }, true);
   }
 
+  async health(): Promise<unknown> {
+    return this.request("/healthz", { method: "GET" }, true);
+  }
+
   async recentTasks(): Promise<unknown> {
     return this.request("/tasks", { method: "GET" });
   }

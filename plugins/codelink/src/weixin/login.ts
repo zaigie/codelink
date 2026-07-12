@@ -1,5 +1,4 @@
 import fs from "node:fs";
-import path from "node:path";
 import readline from "node:readline/promises";
 
 import QRCode from "qrcode";
@@ -13,11 +12,14 @@ export type LoginProgress = {
   qrContent: string;
 };
 
+export type QrOutput = "png" | "terminal" | "both";
+
 export async function loginWithQr(params: {
   client: WeixinClient;
   store: StateStore;
   timeoutMs?: number;
   legacyGet?: boolean;
+  qrOutput?: QrOutput;
   onQr?: (progress: LoginProgress) => void | Promise<void>;
 }): Promise<WeixinSession> {
   const existing = params.store.loadSession();
@@ -40,7 +42,10 @@ export async function loginWithQr(params: {
       // Best effort only.
     }
 
-    qrcodeTerminal.generate(qrContent, { small: true });
+    const qrOutput = params.qrOutput ?? "both";
+    if (qrOutput === "terminal" || qrOutput === "both") {
+      qrcodeTerminal.generate(qrContent, { small: true });
+    }
     process.stdout.write(`\n二维码文件：${qrPath}\n`);
     process.stdout.write(
       `登录协议：${params.legacyGet ? "legacy GET" : "official POST"}\n`,
@@ -125,7 +130,8 @@ export async function loginWithQr(params: {
           config.security.allowedUserIds = [session.userId];
           params.store.saveConfig(config);
         }
-        process.stdout.write(`登录成功，账号：${session.accountId}\n`);
+        removeQrFile(qrPath);
+        process.stdout.write("登录成功。\n");
         const credentialProtection =
           process.platform === "win32"
             ? "当前用户配置目录"
@@ -143,6 +149,7 @@ export async function loginWithQr(params: {
       }
       case "binded_redirect":
         if (existing) {
+          removeQrFile(qrPath);
           process.stdout.write("该微信 Bot 已绑定，继续使用本地已有凭证。\n");
           return existing;
         }
@@ -159,7 +166,16 @@ export async function loginWithQr(params: {
     }
   }
 
-  throw new Error(`等待扫码超时；二维码保留在 ${path.resolve(qrPath)}`);
+  removeQrFile(qrPath);
+  throw new Error("等待扫码超时，请重新运行登录命令获取新二维码");
+}
+
+function removeQrFile(qrPath: string): void {
+  try {
+    fs.rmSync(qrPath, { force: true });
+  } catch {
+    // Best effort cleanup of the short-lived login artifact.
+  }
 }
 
 function normalizeAccountId(value: string): string {

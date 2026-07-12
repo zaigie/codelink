@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import qrcodeTerminal from "qrcode-terminal";
 
 import { StateStore } from "../src/state.js";
 import { loginWithQr } from "../src/weixin/login.js";
@@ -100,5 +101,43 @@ describe("loginWithQr", () => {
       "https://example.test/expired-qr",
       "https://example.test/fresh-qr",
     ]);
+  });
+
+  it("支持安装专用 PNG 模式，不把可扫码内容写进终端并在成功后清理图片", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "codelink-login-"));
+    cleanup.push(dir);
+    const store = new StateStore(dir);
+    const terminalQr = vi.spyOn(qrcodeTerminal, "generate");
+    let qrExistedDuringCallback = false;
+    const stdout = vi
+      .spyOn(process.stdout, "write")
+      .mockImplementation(() => true);
+
+    await loginWithQr({
+      client: {
+        getQrCode: vi.fn(async () => ({
+          qrcode: "fresh-qr",
+          qrcode_img_content: "https://example.test/sensitive-qr",
+        })),
+        getQrStatus: vi.fn(async () => ({
+          status: "confirmed" as const,
+          bot_token: "fresh-token",
+          ilink_bot_id: "fresh-bot@im.bot",
+          ilink_user_id: "owner",
+          baseurl: "https://ilinkai.weixin.qq.com",
+        })),
+      } as never,
+      store,
+      timeoutMs: 1_000,
+      qrOutput: "png",
+      onQr: ({ qrPath }) => {
+        qrExistedDuringCallback = fs.existsSync(qrPath);
+      },
+    });
+
+    expect(qrExistedDuringCallback).toBe(true);
+    expect(terminalQr).not.toHaveBeenCalled();
+    expect(fs.existsSync(store.path("login-qr.png"))).toBe(false);
+    expect(stdout.mock.calls.flat().join(" ")).not.toContain("fresh-bot");
   });
 });

@@ -7,16 +7,13 @@
 ## 最快使用
 
 1. 在微信进入 **设置 → 插件**，找到 **微信 ClawBot** 并启用。
-2. 不要先下载仓库。新建一个 Codex 任务，把下面整段话发给它：
+2. 不要先下载仓库。新建一个 Codex 任务，把下面这句话发给它：
 
 ```text
-请帮我安装一个用于连接微信和 Codex 的插件 CodeLink。
-官方仓库：https://github.com/zaigie/codelink
-安装参考：https://github.com/zaigie/codelink/blob/main/INSTALL.md
-请先完整阅读安装参考，检查本机环境，然后自行克隆或更新到持久目录并完成安装。出现微信二维码后，必须把二维码图片直接显示在当前主会话中并停下来等我扫码，不要只给文件路径，也不要把图片藏在需要展开的执行过程里；不要安装 OpenClaw，也不要输出任何 session 或 token。
+请按照官方安装契约自行安装或更新 CodeLink，并完成安全自检：https://github.com/zaigie/codelink/blob/main/INSTALL.md。二维码出现后请直接显示在当前主会话并等我扫码。
 ```
 
-Codex 直接展示二维码后，用已经启用微信 ClawBot 的微信扫码即可连接。剩下的克隆、构建、插件安装和后台服务注册都由 Codex 完成。详细提示词也收录在 [INSTALL_PROMPT.md](INSTALL_PROMPT.md)。
+Codex 直接展示二维码后，用已经启用微信 ClawBot 的微信扫码即可连接。剩下的克隆、预构建运行时校验、插件安装和后台服务注册都由 Codex 完成。普通安装只需要 Node.js，不需要 npm；详细提示词也收录在 [INSTALL_PROMPT.md](INSTALL_PROMPT.md)。
 
 ## 能做什么
 
@@ -44,7 +41,9 @@ CodeLink 核心不是 macOS 专用：运行时为 Node.js 和纯 JavaScript 依�
 
 macOS 路线已经实机运行；Linux 与 Windows 安装器已完成纯函数、无副作用预检和脚本语法覆盖，仍建议在对应系统完成首轮实机回归后再标记为稳定。
 
-共同要求：Node.js 22+、Git、已经安装并登录的 Codex，以及能够访问 GitHub、npm、腾讯 iLink 的网络。Linux 若不使用 systemd，核心仍可运行，但需要用现有进程管理器或前台启动 daemon；这属于常驻方式差异，不是 CodeLink 核心不支持 Linux。
+macOS 提醒：CodeLink 当前通过 Node.js 运行 LaunchAgent，因此系统的“后台活动”通知或“登录项与扩展”中可能显示 **Node.js Foundation**，而不是 CodeLink。对应的 LaunchAgent 标识为 `ai.codelink.daemon`；这是 CodeLink 的正常后台进程，不是额外安装的未知服务。
+
+共同要求：Node.js 22+、Git、已经安装并登录的 Codex，以及能够访问 GitHub、腾讯 iLink 的网络。普通安装使用仓库内经过哈希校验的预构建运行时，不要求 npm；只有源码开发和显式 `--build` 才访问 npm。Linux 若不使用 systemd，核心仍可运行，但需要用现有进程管理器或前台启动 daemon；这属于常驻方式差异，不是 CodeLink 核心不支持 Linux。
 
 安装器会把 Codex 原生二进制的绝对路径写入用户态服务，避免 launchd、systemd 或 Windows 计划任务拿不到交互式终端的 PATH。其他 CPU 架构取决于 Node.js 与官方 Codex 是否提供对应二进制，当前不笼统承诺支持。
 
@@ -95,6 +94,8 @@ macOS 路线已经实机运行；Linux 与 Windows 安装器已完成纯函数�
 
 ## 开发
 
+终端用户无需执行本节。开发依赖固定使用 `npm@10.9.8`：
+
 ```bash
 cd plugins/codelink
 npm ci
@@ -102,5 +103,7 @@ npm run typecheck
 npm test
 npm run build
 ```
+
+`npm run build` 会同步生成并校验提交给安装器使用的 `dist` 运行时与哈希清单。
 
 架构说明见 [docs/architecture.md](docs/architecture.md)。已有 OpenClaw Bot 的可选迁移方式见 [docs/OPENCLAW_MIGRATION.md](docs/OPENCLAW_MIGRATION.md)；普通安装不需要阅读或执行迁移步骤。
