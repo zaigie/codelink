@@ -40,10 +40,12 @@ chmod +x plugins/codelink/scripts/*.sh
 安装完成后：
 
 1. 新建一个 Codex 任务，使新插件生效；
-2. 在 Codex 中说“检查微信连接状态”；
+2. 在 Codex 中说“检查 CodeLink 微信连接和当前会话状态”；
 3. 从微信向 Bot 发送 `/status`；
-4. 再发送一条普通文字，确认微信先收到“正在创建任务”，随后收到带 thread ID 的最终结果；
-5. 在任意 Codex 任务中说“完成后通过微信通知我”，确认收到主动通知。
+4. 从微信发送第一条普通文字，记录返回的 thread ID；再发送一条追问，确认 thread ID 不变；
+5. 发送 `/new 新的问题`，确认 thread ID 改变；再用“开个新会话，……”验证自然语言切换；
+6. 在任意新建的 Codex 桌面任务中输入 `@CodeLink 完成后微信通知我`，确认通知带有 CodeLink 固定尾注；
+7. 直接回复该微信通知，确认回复继续桌面任务的 thread；再从另一个桌面任务通知一次，确认最近通知的任务覆盖旧绑定。
 
 ## 更新
 
@@ -77,9 +79,9 @@ node dist/cli.cjs login
 
 不要先安装 OpenClaw，也不要复制其他机器的 token。只有正在迁移一个已有 OpenClaw Bot 时，才需要参考可选的 [迁移说明](docs/OPENCLAW_MIGRATION.md)。
 
-### 为什么微信会话没有出现在 Codex App 左侧
+### 为什么由微信新建的会话没有出现在 Codex App 左侧
 
-这是当前明确的能力边界。CodeLink 通过官方 App Server 启动独立 Codex 会话，但外部 App Server 没有公开接口向正在运行的 Codex App 侧栏推送新任务。会话仍会返回 thread ID、保存在 Codex 本地存储，并可通过 CodeLink 的近期任务工具查询。详见 [能力边界](docs/CAPABILITY_BOUNDARY.md)。
+这是当前明确的能力边界。CodeLink 通过官方 App Server 新建会话，但外部 App Server 没有公开接口向正在运行的 Codex App 侧栏推送任务。会话仍会返回 thread ID、保存在 Codex 本地存储，并可通过 CodeLink 的近期任务工具查询。已存在并通过 `@CodeLink` 绑定的桌面任务不受这条限制。详见 [能力边界](docs/CAPABILITY_BOUNDARY.md)。
 
 ### 后台服务没有启动
 

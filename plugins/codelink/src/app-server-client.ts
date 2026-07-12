@@ -16,11 +16,17 @@ export type AppServerRunOptions = {
 export type AppServerRunResult = {
   threadId: string;
   finalResponse: string;
+  cwd?: string;
 };
 
 export interface CodexAppServer {
   runNewThread(
     options: AppServerRunOptions,
+    prompt: string,
+  ): Promise<AppServerRunResult>;
+  continueThread(
+    options: AppServerRunOptions,
+    threadId: string,
     prompt: string,
   ): Promise<AppServerRunResult>;
 }
@@ -44,6 +50,22 @@ export class StdioCodexAppServer implements CodexAppServer {
   async runNewThread(
     options: AppServerRunOptions,
     prompt: string,
+  ): Promise<AppServerRunResult> {
+    return this.run(options, prompt);
+  }
+
+  async continueThread(
+    options: AppServerRunOptions,
+    threadId: string,
+    prompt: string,
+  ): Promise<AppServerRunResult> {
+    return this.run(options, prompt, threadId);
+  }
+
+  private async run(
+    options: AppServerRunOptions,
+    prompt: string,
+    existingThreadId?: string,
   ): Promise<AppServerRunResult> {
     const child = spawn(this.codexBin, ["app-server", "--listen", "stdio://"], {
       cwd: options.cwd,
@@ -73,31 +95,67 @@ export class StdioCodexAppServer implements CodexAppServer {
       });
       session.notify("initialized", {});
 
-      const threadResponse = (await session.request("thread/start", {
-        cwd: options.cwd,
-        approvalPolicy: options.approvalPolicy,
-        sandbox: options.sandboxMode,
-        ephemeral: false,
-        ...(options.developerInstructions
-          ? { developerInstructions: options.developerInstructions }
-          : {}),
-        ...(options.model ? { model: options.model } : {}),
-      })) as { thread?: { id?: string } };
+      const method = existingThreadId ? "thread/resume" : "thread/start";
+      const threadResponse = (await session.request(method, {
+        ...(existingThreadId
+          ? { threadId: existingThreadId }
+          : {
+              cwd: options.cwd,
+              approvalPolicy: options.approvalPolicy,
+              sandbox: options.sandboxMode,
+              ephemeral: false,
+              ...(options.developerInstructions
+                ? { developerInstructions: options.developerInstructions }
+                : {}),
+              ...(options.model ? { model: options.model } : {}),
+            }),
+      })) as {
+        thread?: {
+          id?: string;
+          cwd?: string;
+          turns?: Array<{ id?: string; status?: string }>;
+        };
+      };
       const threadId = threadResponse.thread?.id;
       if (!threadId) throw new Error("Codex App Server 未返回 thread id");
 
       const completion = session.waitForTurn(threadId);
-      await session.request("turn/start", {
-        threadId,
-        cwd: options.cwd,
-        approvalPolicy: options.approvalPolicy,
-        sandboxPolicy: sandboxPolicy(options),
-        ...(options.model ? { model: options.model } : {}),
-        input: [{ type: "text", text: prompt, text_elements: [] }],
-      });
+      const input = [{ type: "text", text: prompt, text_elements: [] }];
+      const activeTurn = existingThreadId
+        ? threadResponse.thread?.turns
+            ?.slice()
+            .reverse()
+            .find((turn) => turn.status === "inProgress" && turn.id)
+        : undefined;
+      if (activeTurn?.id) {
+        await session.request("turn/steer", {
+          threadId,
+          expectedTurnId: activeTurn.id,
+          input,
+        });
+      } else {
+        await session.request("turn/start", {
+          threadId,
+          ...(!existingThreadId
+            ? {
+                cwd: options.cwd,
+                approvalPolicy: options.approvalPolicy,
+                sandboxPolicy: sandboxPolicy(options),
+                ...(options.model ? { model: options.model } : {}),
+              }
+            : {}),
+          input,
+        });
+      }
 
       const finalResponse = await completion;
-      return { threadId, finalResponse };
+      return {
+        threadId,
+        finalResponse,
+        ...(threadResponse.thread?.cwd
+          ? { cwd: threadResponse.thread.cwd }
+          : {}),
+      };
     } finally {
       session.close();
     }

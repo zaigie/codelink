@@ -16,11 +16,16 @@ export type ContextTokenRecord = {
   updatedAt: string;
 };
 
+export type ConversationBinding = {
+  threadId: string;
+  updatedAt: string;
+};
+
 export type TaskRecord = {
   messageId: string;
   fromUserId: string;
   threadId?: string;
-  workspace: string;
+  workspace?: string;
   promptPreview: string;
   status: "running" | "completed" | "failed";
   startedAt: string;
@@ -31,6 +36,10 @@ export type TaskRecord = {
 
 type TaskState = {
   tasks: TaskRecord[];
+};
+
+type ConversationState = {
+  conversations: Record<string, ConversationBinding>;
 };
 
 export class StateStore {
@@ -114,6 +123,57 @@ export class StateStore {
     return this.loadContextTokens()[userId] ?? null;
   }
 
+  getConversation(userId: string): ConversationBinding | null {
+    return this.loadConversationState().conversations[userId] ?? null;
+  }
+
+  bindConversation(
+    userId: string,
+    binding: Pick<ConversationBinding, "threadId">,
+  ): void {
+    const state = this.loadConversationState();
+    const current = state.conversations[userId] ?? null;
+    state.conversations[userId] = {
+      threadId: binding.threadId,
+      updatedAt: nextConversationUpdatedAt(current),
+    };
+    this.writeJson("conversations.json", state, 0o600);
+  }
+
+  bindConversationIfUnchanged(
+    userId: string,
+    expected: ConversationBinding | null,
+    threadId: string,
+  ): boolean {
+    return this.replaceConversationIfUnchanged(userId, expected, { threadId });
+  }
+
+  replaceConversationIfUnchanged(
+    userId: string,
+    expected: ConversationBinding | null,
+    replacement: Pick<ConversationBinding, "threadId"> | null,
+  ): boolean {
+    const state = this.loadConversationState();
+    const current = state.conversations[userId] ?? null;
+    if (!sameConversationBinding(current, expected)) return false;
+    if (replacement) {
+      state.conversations[userId] = {
+        threadId: replacement.threadId,
+        updatedAt: nextConversationUpdatedAt(current),
+      };
+    } else {
+      delete state.conversations[userId];
+    }
+    this.writeJson("conversations.json", state, 0o600);
+    return true;
+  }
+
+  clearConversation(userId: string): void {
+    const state = this.loadConversationState();
+    delete state.conversations[userId];
+    this.writeJson("conversations.json", state, 0o600);
+  }
+
   listTasks(limit = 20): TaskRecord[] {
     const state = this.loadTaskState();
     return state.tasks.slice(-Math.max(1, limit)).reverse();
@@ -142,6 +202,16 @@ export class StateStore {
     return { tasks: Array.isArray(data?.tasks) ? data.tasks : [] };
   }
 
+  private loadConversationState(): ConversationState {
+    const data = this.readJson("conversations.json") as ConversationState | null;
+    return {
+      conversations:
+        data?.conversations && typeof data.conversations === "object"
+          ? data.conversations
+          : {},
+    };
+  }
+
   private readJson(name: string): unknown | null {
     this.ensure();
     try {
@@ -166,4 +236,22 @@ export class StateStore {
       // Best effort on filesystems that do not support POSIX permissions.
     }
   }
+}
+
+function sameConversationBinding(
+  left: ConversationBinding | null,
+  right: ConversationBinding | null,
+): boolean {
+  if (!left || !right) return left === right;
+  return left.threadId === right.threadId && left.updatedAt === right.updatedAt;
+}
+
+function nextConversationUpdatedAt(
+  current: ConversationBinding | null,
+): string {
+  const previous = current ? Date.parse(current.updatedAt) : Number.NaN;
+  const timestamp = Number.isFinite(previous)
+    ? Math.max(Date.now(), previous + 1)
+    : Date.now();
+  return new Date(timestamp).toISOString();
 }

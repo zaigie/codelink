@@ -1,66 +1,71 @@
 # CodeLink 能力边界
 
-本文档定义 CodeLink 当前承诺的能力，避免把“Codex 会话存在”误解为“Codex App 侧栏一定展示”。
+CodeLink 当前的核心能力是：为每个授权微信用户维护一个“当前 Codex 会话”，让微信和 Codex 桌面任务可以自然地接力。
 
 ## 已支持并验证
 
 ### 微信直接登录
 
 - CodeLink 可以在空状态目录中直接请求腾讯 iLink 二维码并完成登录；
-- 不需要安装、启动或部署 OpenClaw；
-- 不需要从 OpenClaw 或其他机器复制 session；
+- 不需要安装、运行或部署 OpenClaw，也不需要复制其 session；
 - 微信凭证只保存在 `~/.codelink`，权限为 `0600`。
 
-### 微信触发 Codex
+### 当前会话
 
-- 微信普通文字会启动一个独立 Codex 会话；
-- 使用 OpenAI 官方公开的 [Codex App Server](https://learn.chatgpt.com/docs/app-server) stdio 协议；
-- 每次执行都有独立工作目录、thread ID、运行状态和最终回复；
-- 完成或失败结果会返回微信；
-- CodeLink 保留最近的消息与 thread ID 映射，可通过 MCP 工具查询。
+- 没有绑定时，第一条微信普通消息通过官方 `thread/start` 创建并绑定 Codex 会话；
+- 后续普通消息通过 `thread/resume` 继续同一个 thread；
+- 若原任务仍在运行，CodeLink 使用官方 `turn/steer` 把微信回复加入当前 turn；否则使用 `turn/start` 开始下一轮；
+- 绑定保存在 `conversations.json`，每个微信用户相互独立。
 
-### Codex 主动通知微信
+### 新会话
 
-- 任意加载了插件的 Codex 项目或任务可以检查微信连接；
-- 可以发送进度、结果或总结到已授权微信用户；
-- MCP 响应不会暴露 bot token 或 context token。
+- `/new` 清除当前绑定，下一条消息从新上下文开始；
+- `/new <请求>` 立即新建会话并执行请求；
+- “开个新会话”“重新开一个会话，……”或“换个话题：……”等句首明确意图也能切换；
+- 讨论“如何实现新建会话功能”等普通请求不会触发切换。
 
-## 不承诺的能力
+### 桌面任务绑定与通知
+
+- 任意加载了插件的新 Codex 桌面任务都可以通过 `@CodeLink` 发送微信通知；
+- CodeLink 从 Codex 提供给 MCP 调用的可信 `_meta.threadId` 读取调用方 thread，不让模型或用户填写 thread ID；
+- 通知发送前先绑定调用方 thread，微信随后可以直接回复继续；
+- 另一个任务再次通知时，以最近一次成功通知的绑定为准；
+- 较早的微信任务稍后完成时，不会覆盖期间产生的更新绑定；
+- daemon 统一追加任务通知标签和回复说明；
+- 如果当前 Codex 环境没有提供可信 thread 元数据，通知仍可发送，但不会改变当前绑定，并会明确提示降级结果。
+
+`_meta.threadId` 已由当前官方 Codex 客户端真实验证，但尚未写入公开 App Server 文档。CodeLink 因此保留缺失检测和不绑定降级，不把它当作不可变化的永久协议字段。
+
+## 安全与产品边界
 
 ### Codex App 左侧任务列表
 
-外部 CodeLink daemon 会启动自己的 App Server 进程。线程能保存到本机 Codex 会话存储，也能通过 thread ID 读取，但 OpenAI 当前没有公开接口让第三方后台进程把 `thread/started` 事件注入已经运行的 Codex App 连接。
+CodeLink 新建的微信会话会保存到本机 Codex 存储并返回 thread ID，但外部 App Server 没有公开接口向已经运行的 Codex App 侧栏推送新的任务事件。因此不保证微信新建的会话：
 
-因此 CodeLink 不保证微信创建的会话：
-
-- 实时出现在 Codex App 左侧任务列表；
-- 按预期顺序排在侧栏顶部；
+- 实时出现在左侧任务列表；
+- 排在侧栏顶部；
 - 自动打开或获得未读标记。
 
-CodeLink 明确不会通过以下方式绕过边界：
-
-- 伪装 `Codex Desktop` 或其他官方客户端身份；
-- 修改 Codex App SQLite 数据库或 UI 状态；
-- 劫持桌面 App 的 stdio、Unix socket 或私有 IPC；
-- 使用未公开 deeplink 强制打开会话。
-
-如果 OpenAI 后续公开面向第三方 daemon 的 App 任务创建或刷新接口，CodeLink 才会把侧栏集成加入正式能力。
+这条限制不影响已经存在并通过 `@CodeLink` 绑定的桌面任务。CodeLink 不会伪装官方客户端、修改 App SQLite/UI 状态、劫持私有 IPC 或使用未公开 deeplink 绕过限制。
 
 ### 其他边界
 
-- 微信任务不会自动附着到某个现有项目；
 - 当前只处理文字消息；
-- 当前不提供微信 HITL 审批；
-- 当前小白常驻安装只支持 macOS LaunchAgent。
+- 微信续接不等于 HITL 审批，不能批准 Codex 工具调用或权限请求；
+- 微信新建的会话使用生成工作目录；绑定的桌面任务保持原项目、上下文和设置；
+- 当前小白常驻安装只支持 macOS LaunchAgent；
+- 本地 daemon API 只应监听 loopback 地址。
 
 ## 验收标准
 
-CodeLink 安装成功应满足：
+1. 裸登录不依赖 OpenClaw；
+2. 微信第一条消息创建 thread，第二条普通消息沿用同一 ID；
+3. `/new` 和明确自然语言切换后获得新 ID；
+4. 桌面任务 `@CodeLink` 后收到带固定标识的微信通知；
+5. 微信回复继续该桌面 thread；
+6. 后续桌面任务通知可以覆盖当前绑定；
+7. 较早任务在新绑定之后完成时，不会把当前会话切回去；
+8. daemon 重启后仍能从保存的 thread ID 继续；
+9. MCP 和日志不暴露 bot token 或 context token。
 
-1. 微信 `/status` 返回运行状态；
-2. 微信普通消息能触发 Codex，并收到带 thread ID 的最终结果；
-3. CodeLink 近期任务列表能查到消息、状态和 thread ID；
-4. Codex 能主动向微信发送通知；
-5. 无 OpenClaw 进程、依赖或必需状态文件。
-
-Codex App 侧栏是否展示该 thread 不作为验收项。
+微信新建会话是否出现在 Codex App 侧栏不作为验收项。

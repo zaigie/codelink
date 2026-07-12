@@ -1,27 +1,38 @@
 ---
 name: wechat-codelink
-description: Use CodeLink when the user asks Codex to notify them on WeChat, send a task summary or progress update to WeChat, check the WeChat bridge, or inspect tasks received from WeChat.
+description: Use CodeLink when the user asks Codex to notify them on WeChat, bind the current Codex conversation for later continuation from WeChat, check the bridge or current binding, or inspect recent WeChat conversation activity.
 ---
 
 # CodeLink WeChat
 
 CodeLink exposes tools from the `codelink` MCP server. Use the smallest tool that satisfies the request.
 
-## Sending messages
+## Send and bind
 
-- Use `send_wechat_message` only when the user explicitly asks to send, notify, report, or summarize through WeChat.
+- Use `send_wechat_message` only when the user explicitly asks to send, notify, report, summarize, or continue through WeChat.
+- Let CodeLink read the calling Codex thread from trusted tool metadata. Never ask the user for a thread ID and never invent one.
+- A successful call normally makes the calling Codex conversation the recipient's current WeChat conversation. The latest notifying conversation replaces the earlier binding.
+- Check `conversationBound` in the result. If it is false, state that the notification was sent but the current conversation was not changed.
 - Treat the tool call as an external message. Preserve the user's intended meaning and do not add secrets, local paths, raw logs, tokens, hidden reasoning, or unrelated context.
 - Prefer a short outcome-first update. For completion notifications, include the result, important verification status, and any remaining blocker.
 - Omit `userId` to use the owner who completed QR login. Provide it only when the user explicitly identifies another already-authorized recipient.
 - If the daemon is offline or no usable context token exists, report the returned error and do not claim delivery.
+- Do not write the CodeLink notification label or reply instructions yourself. The daemon appends the canonical footer.
+
+## Conversation behavior
+
+- Treat ordinary WeChat messages as follow-ups to the current bound Codex conversation.
+- Start a new conversation when the user sends `/new`, `/new <request>`, or clearly says phrases such as “开个新会话” or “换个话题”. Do not require `/new` when the intent is explicit.
+- After a desktop task sends a bound notification, tell the user they can reply in WeChat to continue it.
 
 ## Read-only checks
 
-- Use `get_wechat_status` to verify whether the daemon, session, and default recipient are ready.
-- Use `list_recent_wechat_tasks` when the user asks about tasks created from incoming WeChat messages.
+- Use `get_wechat_status` to verify whether the daemon, session, default recipient, and current conversation are ready.
+- Use `list_recent_wechat_tasks` when the user asks about recent WeChat conversation turns.
 
 ## Boundaries
 
-- Incoming WeChat messages start independent Codex sessions in generated workspaces. They are not attached to the current repository, and they are not guaranteed to appear in the live Codex App sidebar.
-- Do not use CodeLink to add human-in-the-loop approval behavior. The current version only creates tasks and sends notifications.
+- Only a new conversation created from WeChat gets a generated workspace. A bound desktop conversation keeps its existing Codex context.
+- Do not claim that a WeChat-created conversation will appear in the live Codex App sidebar.
+- Do not treat conversation continuation as human-in-the-loop approval. CodeLink does not approve tool calls or permission requests through WeChat.
 - Never reveal or request the stored bot token through a tool response.

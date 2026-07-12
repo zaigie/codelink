@@ -3,6 +3,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 
 import { DaemonClient } from "./daemon-client.js";
+import { isCodexThreadId } from "./codex-thread-id.js";
 
 export function createMcpServer(client = new DaemonClient()): McpServer {
   const server = new McpServer({ name: "codelink", version: "0.1.0" });
@@ -12,7 +13,7 @@ export function createMcpServer(client = new DaemonClient()): McpServer {
     {
       title: "Get CodeLink WeChat status",
       description:
-        "Check whether the local CodeLink daemon, WeChat session, and default notification context are ready. This never returns the bot token.",
+        "Check whether the local CodeLink daemon, WeChat session, default notification context, and current Codex conversation binding are ready. This never returns the bot token.",
       inputSchema: {},
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
@@ -24,7 +25,7 @@ export function createMcpServer(client = new DaemonClient()): McpServer {
     {
       title: "List recent WeChat-created Codex tasks",
       description:
-        "List recent task records created from incoming WeChat messages, including Codex thread ids and completion status. Prompt and response content are preview-only.",
+        "List recent Codex turns started or continued from WeChat, including thread ids and completion status. Prompt and response content are preview-only.",
       inputSchema: {},
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
@@ -36,7 +37,7 @@ export function createMcpServer(client = new DaemonClient()): McpServer {
     {
       title: "Send a WeChat message",
       description:
-        "Send a user-authorized task update, result, or summary through the local CodeLink daemon. Omit userId to notify the owner who completed QR login. Requires a context token from a prior inbound WeChat message.",
+        "Send a user-authorized task update, result, or summary through the local CodeLink daemon and bind the calling Codex conversation when trusted thread metadata is available. Omit userId to notify the owner who completed QR login. Requires a context token from a prior inbound WeChat message.",
       inputSchema: {
         text: z
           .string()
@@ -60,10 +61,32 @@ export function createMcpServer(client = new DaemonClient()): McpServer {
         openWorldHint: true,
       },
     },
-    async ({ text, userId }) => asToolResult(await client.send(text, userId)),
+    async ({ text, userId }, extra) => {
+      const threadId = resolveCodexThreadId(extra._meta);
+      return asToolResult(
+        await client.send({
+          text,
+          ...(userId ? { userId } : {}),
+          ...(threadId ? { threadId } : {}),
+        }),
+      );
+    },
   );
 
   return server;
+}
+
+export function resolveCodexThreadId(
+  meta: Record<string, unknown> | undefined,
+): string | undefined {
+  const direct = meta?.threadId;
+  if (isCodexThreadId(direct)) return direct;
+  const turnMetadata = meta?.["x-codex-turn-metadata"];
+  if (turnMetadata && typeof turnMetadata === "object") {
+    const nested = (turnMetadata as Record<string, unknown>).thread_id;
+    if (isCodexThreadId(nested)) return nested;
+  }
+  return undefined;
 }
 
 function asToolResult(value: unknown) {

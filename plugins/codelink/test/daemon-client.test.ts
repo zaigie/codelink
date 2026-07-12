@@ -16,11 +16,17 @@ describe("DaemonClient", () => {
       fetchImpl: fetchMock,
     });
 
-    const result = await client.send("task completed");
+    const result = await client.send({
+      text: "task completed",
+      threadId: "019f55b8-d06b-7213-98de-2815f865c43d",
+    });
 
     expect(result).toEqual({ ok: true, toUserId: "owner" });
     const [url, init] = fetchMock.mock.calls[0];
     expect(String(url)).toBe("http://127.0.0.1:18791/send");
-    expect(JSON.parse(String(init?.body))).toEqual({ text: "task completed" });
+    expect(JSON.parse(String(init?.body))).toEqual({
+      text: "task completed",
+      threadId: "019f55b8-d06b-7213-98de-2815f865c43d",
+    });
   });
 });

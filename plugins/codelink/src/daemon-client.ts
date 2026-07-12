@@ -3,6 +3,12 @@ export type DaemonClientOptions = {
   fetchImpl?: typeof fetch;
 };
 
+export type NotificationRequest = {
+  text: string;
+  userId?: string;
+  threadId?: string;
+};
+
 export class DaemonClient {
   private readonly baseUrl: string;
   private readonly fetchImpl: typeof fetch;
@@ -23,11 +29,15 @@ export class DaemonClient {
     return this.request("/tasks", { method: "GET" });
   }
 
-  async send(text: string, userId?: string): Promise<unknown> {
+  async send(request: NotificationRequest): Promise<unknown> {
     return this.request("/send", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text, ...(userId ? { userId } : {}) }),
+      body: JSON.stringify({
+        text: request.text,
+        ...(request.userId ? { userId: request.userId } : {}),
+        ...(request.threadId ? { threadId: request.threadId } : {}),
+      }),
     });
   }
 

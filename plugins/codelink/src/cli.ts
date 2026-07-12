@@ -51,10 +51,11 @@ async function main(): Promise<void> {
       if (!prompt) throw new Error("用法：codelink task <任务文字>");
       const runner = new CodexTaskRunner(config.codex, store);
       printJson(
-        await runner.runNewTask({
+        await runner.runTask({
           messageId: `local-${randomUUID()}`,
           fromUserId: "local-cli",
           prompt,
+          startNew: true,
         }),
       );
       return;
@@ -62,7 +63,7 @@ async function main(): Promise<void> {
     case "send": {
       const text = args.join(" ").trim();
       if (!text) throw new Error("用法：codelink send <消息文字>");
-      printJson(await new DaemonClient().send(text));
+      printJson(await new DaemonClient().send({ text }));
       return;
     }
     case "state": {
@@ -72,6 +73,7 @@ async function main(): Promise<void> {
         session: store.path("weixin-session.json"),
         syncCursor: store.path("get-updates.json"),
         contextTokens: store.path("context-tokens.json"),
+        conversations: store.path("conversations.json"),
         tasks: store.path("tasks.json"),
         qr: store.path("login-qr.png"),
       });
@@ -134,8 +136,8 @@ function helpText(): string {
     `  codelink login [--legacy-get]  显示微信二维码并保存登录凭证\n` +
     `  codelink daemon         前台运行微信监听与本地通知 API\n` +
     `  codelink status         检查守护进程和微信连接\n` +
-    `  codelink tasks          查看最近由微信创建的 Codex 任务\n` +
-    `  codelink task <文字>    本地模拟微信消息并创建独立 Codex 任务\n` +
+    `  codelink tasks          查看最近由微信发起或续接的 Codex 记录\n` +
+    `  codelink task <文字>    本地创建新的 CodeLink Codex 会话\n` +
     `  codelink send <文字>    向默认微信用户发送通知\n` +
     `  codelink state          显示本地状态文件路径（不会输出 token）\n` +
     `  codelink export-openclaw <文件> [目录]  从云端 OpenClaw 导出最小微信状态包\n` +

@@ -61,4 +61,55 @@ describe("StateStore", () => {
     expect(store.listTasks()).toHaveLength(1);
     expect(store.findTask("42")?.status).toBe("completed");
   });
+
+  it("persists, replaces, and clears the active Codex conversation per WeChat user", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "codelink-state-"));
+    cleanup.push(dir);
+    const store = new StateStore(dir);
+
+    store.bindConversation("owner", {
+      threadId: "thread-from-wechat",
+    });
+    store.bindConversation("teammate", { threadId: "thread-teammate" });
+    store.bindConversation("owner", { threadId: "thread-from-desktop" });
+
+    expect(store.getConversation("owner")).toMatchObject({
+      threadId: "thread-from-desktop",
+    });
+    expect(store.getConversation("teammate")?.threadId).toBe(
+      "thread-teammate",
+    );
+    expect(fs.statSync(store.path("conversations.json")).mode & 0o777).toBe(
+      0o600,
+    );
+
+    store.clearConversation("owner");
+    expect(store.getConversation("owner")).toBeNull();
+    expect(store.getConversation("teammate")?.threadId).toBe(
+      "thread-teammate",
+    );
+  });
+
+  it("does not let an older task completion overwrite a newer conversation binding", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "codelink-state-"));
+    cleanup.push(dir);
+    const store = new StateStore(dir);
+    store.bindConversation("owner", { threadId: "thread-a" });
+    const bindingAtTaskStart = store.getConversation("owner");
+    store.bindConversation("owner", { threadId: "thread-b" });
+
+    expect(
+      store.bindConversationIfUnchanged(
+        "owner",
+        bindingAtTaskStart,
+        "thread-a",
+      ),
+    ).toBe(false);
+    expect(store.getConversation("owner")?.threadId).toBe("thread-b");
+
+    expect(
+      store.bindConversationIfUnchanged("new-user", null, "thread-new"),
+    ).toBe(true);
+    expect(store.getConversation("new-user")?.threadId).toBe("thread-new");
+  });
 });

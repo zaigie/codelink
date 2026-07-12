@@ -1,7 +1,9 @@
 import http, { IncomingMessage, ServerResponse } from "node:http";
 
+import { parseNewConversationIntent } from "./conversation-intent.js";
 import { CodelinkConfig } from "./config.js";
 import { RunTaskInput, TaskRunner } from "./codex-task-runner.js";
+import { isCodexThreadId } from "./codex-thread-id.js";
 import { StateStore, WeixinSession } from "./state.js";
 import { WeixinClient } from "./weixin/client.js";
 import { WeixinMessage } from "./weixin/types.js";
@@ -12,6 +14,7 @@ type DaemonStatus = {
   ownerUserId?: string;
   allowedUserIds: string[];
   hasDefaultContextToken: boolean;
+  activeThreadId?: string;
   recentTasks: number;
 };
 
@@ -70,7 +73,7 @@ export class CodelinkDaemon {
           this.store.saveSyncCursor(cursor);
         }
         for (const message of updates.msgs ?? []) {
-          await this.processIncoming(session, message);
+          await this.handleIncomingMessage(session, message);
         }
       } catch (error) {
         process.stderr.write(
@@ -81,7 +84,7 @@ export class CodelinkDaemon {
     }
   }
 
-  private async processIncoming(
+  async handleIncomingMessage(
     session: WeixinSession,
     message: WeixinMessage,
   ): Promise<void> {
@@ -136,30 +139,63 @@ export class CodelinkDaemon {
           session,
           toUserId: fromUserId,
           contextToken,
-          text: "CodeLink：直接发送文字即可创建一个独立 Codex 任务。命令：/status、/help。",
+          text: "CodeLink：普通消息继续当前 Codex 会话；没有当前会话时自动新建。发送 /new，或直接说“开个新会话”，即可切换。命令：/status、/help。",
         });
       }
       return;
     }
+
+    const conversationIntent = parseNewConversationIntent(text);
+    if (conversationIntent.startNew) {
+      this.store.clearConversation(fromUserId);
+      if (!conversationIntent.prompt) {
+        if (contextToken) {
+          await this.client.sendText({
+            session,
+            toUserId: fromUserId,
+            contextToken,
+            text: "已切换到新会话。直接发送下一条消息即可开始。",
+          });
+        }
+        return;
+      }
+    }
+
+    const conversationAtReceipt = this.store.getConversation(fromUserId);
+
+    const willCreateNewConversation =
+      conversationIntent.startNew ||
+      !conversationAtReceipt;
 
     if (contextToken) {
       await this.client.sendText({
         session,
         toUserId: fromUserId,
         contextToken,
-        text: `已收到，正在创建独立 Codex 任务（消息 ${messageId}）。`,
+        text: `已收到，正在${willCreateNewConversation ? "创建新" : "继续当前"} Codex 会话（消息 ${messageId}）。`,
       });
     }
 
-    const input: RunTaskInput = { messageId, fromUserId, prompt: text };
+    const input: RunTaskInput = {
+      messageId,
+      fromUserId,
+      prompt: conversationIntent.prompt,
+      conversationAtReceipt,
+      ...(conversationIntent.startNew ? { startNew: true } : {}),
+    };
     try {
-      const result = await this.taskRunner.runNewTask(input);
+      const result = await this.taskRunner.runTask(input);
       if (contextToken) {
+        const responseLabel = result.conversationIsCurrent
+          ? result.createdNewConversation
+            ? "新会话已回复"
+            : "当前会话已回复"
+          : "会话已回复（期间收到更晚的 CodeLink 通知，微信当前会话已切换）";
         await this.sendChunks(
           session,
           fromUserId,
           contextToken,
-          `任务已完成\nThread: ${result.threadId}\n\n${result.finalResponse}`,
+          `${responseLabel}\nThread: ${result.threadId}\n\n${result.finalResponse}`,
         );
       }
     } catch (error) {
@@ -190,12 +226,18 @@ export class CodelinkDaemon {
         const text = typeof body.text === "string" ? body.text.trim() : "";
         const userId =
           typeof body.userId === "string" ? body.userId.trim() : "";
+        const threadId =
+          typeof body.threadId === "string" ? body.threadId.trim() : "";
         if (!text)
           return this.json(response, 400, {
             ok: false,
             error: "text is required",
           });
-        const result = await this.sendNotification(text, userId || undefined);
+        const result = await this.sendNotification(
+          text,
+          userId || undefined,
+          threadId || undefined,
+        );
         return this.json(response, 200, result);
       }
       return this.json(response, 404, { ok: false, error: "not found" });
@@ -210,6 +252,9 @@ export class CodelinkDaemon {
   private status(): DaemonStatus {
     const session = this.store.loadSession();
     const ownerUserId = session?.userId;
+    const activeThreadId = ownerUserId
+      ? this.store.getConversation(ownerUserId)?.threadId
+      : undefined;
     return {
       ok: Boolean(session && this.pollingStartedAt),
       accountId: session?.accountId,
@@ -218,6 +263,7 @@ export class CodelinkDaemon {
       hasDefaultContextToken: Boolean(
         ownerUserId && this.store.getContextToken(ownerUserId),
       ),
+      ...(activeThreadId ? { activeThreadId } : {}),
       recentTasks: this.store.listTasks(500).length,
     };
   }
@@ -228,14 +274,21 @@ export class CodelinkDaemon {
       `CodeLink: ${status.ok ? "运行中" : "未就绪"}`,
       `账号: ${status.accountId ?? "未登录"}`,
       `默认通知上下文: ${status.hasDefaultContextToken ? "可用" : "尚未建立"}`,
+      `当前 Codex 会话: ${status.activeThreadId ?? "尚未绑定"}`,
       `任务记录: ${status.recentTasks}`,
     ].join("\n");
   }
 
-  private async sendNotification(
+  async sendNotification(
     text: string,
     explicitUserId?: string,
-  ): Promise<{ ok: true; toUserId: string }> {
+    requestedThreadId?: string,
+  ): Promise<{
+    ok: true;
+    toUserId: string;
+    conversationBound: boolean;
+    threadId?: string;
+  }> {
     const session = this.requireSession();
     const toUserId = explicitUserId || session.userId;
     if (!toUserId)
@@ -252,8 +305,37 @@ export class CodelinkDaemon {
       throw new Error(
         "没有可用的 context_token；请先从目标微信账号向 CodeLink 发送一条消息",
       );
-    await this.sendChunks(session, toUserId, context.contextToken, text);
-    return { ok: true, toUserId };
+    const threadId = isCodexThreadId(requestedThreadId)
+      ? requestedThreadId
+      : undefined;
+    const previousBinding = this.store.getConversation(toUserId);
+    if (threadId) this.store.bindConversation(toUserId, { threadId });
+    const notificationBinding = threadId
+      ? this.store.getConversation(toUserId)
+      : null;
+    try {
+      await this.sendChunks(
+        session,
+        toUserId,
+        context.contextToken,
+        formatTaskNotification(text, Boolean(threadId)),
+      );
+    } catch (error) {
+      if (threadId && notificationBinding) {
+        this.store.replaceConversationIfUnchanged(
+          toUserId,
+          notificationBinding,
+          previousBinding,
+        );
+      }
+      throw error;
+    }
+    return {
+      ok: true,
+      toUserId,
+      conversationBound: Boolean(threadId),
+      ...(threadId ? { threadId } : {}),
+    };
   }
 
   private async sendChunks(
@@ -317,6 +399,13 @@ function chunkText(text: string, max: number): string[] {
   }
   if (rest) result.push(rest);
   return result;
+}
+
+function formatTaskNotification(text: string, conversationBound: boolean) {
+  const footer = conversationBound
+    ? "—— CodeLink 任务通知\n此任务已设为微信当前 Codex 会话；可直接回复继续，发送 /new 或直接说“开个新会话”开始新会话。"
+    : "—— CodeLink 任务通知\n本通知未切换当前 Codex 会话；回复将继续此前已绑定的会话（如有），发送 /new 开始新会话。";
+  return `${text.trim()}\n\n${footer}`;
 }
 
 function delay(ms: number): Promise<void> {
