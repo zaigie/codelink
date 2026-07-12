@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -19,6 +20,8 @@ import {
   validateRuntimeArtifacts,
 } from "../scripts/setup-lib.mjs";
 import { renderLaunchAgent } from "../scripts/render-launch-agent.mjs";
+
+const testDir = path.dirname(fileURLToPath(import.meta.url));
 
 function hasSh() {
   return (
@@ -91,7 +94,7 @@ describe("跨平台安装计划", () => {
   });
 
   it("只有显式 --build 才要求 npm，普通预检可使用预构建运行时", () => {
-    const pluginRoot = path.resolve(import.meta.dirname, "..");
+    const pluginRoot = path.resolve(testDir, "..");
     const result = spawnSync(
       process.execPath,
       [path.join(pluginRoot, "scripts", "setup.mjs"), "--dry-run"],
@@ -145,7 +148,7 @@ describe("端口预检", () => {
 
 describe("预构建运行时", () => {
   it("校验清单中的两个运行时文件并拒绝被篡改的内容", () => {
-    const pluginDir = fs.mkdtempSync(path.join(import.meta.dirname, "runtime-"));
+    const pluginDir = fs.mkdtempSync(path.join(testDir, "runtime-"));
     try {
       const distDir = path.join(pluginDir, "dist");
       fs.mkdirSync(distDir);
@@ -176,7 +179,7 @@ describe("预构建运行时", () => {
   });
 
   it("无服务安装也复制最小运行时，并保留已有用户状态", () => {
-    const root = fs.mkdtempSync(path.join(import.meta.dirname, "install-"));
+    const root = fs.mkdtempSync(path.join(testDir, "install-"));
     try {
       const pluginDir = path.join(root, "plugin");
       const stateDir = path.join(root, "state");
@@ -240,7 +243,7 @@ describe("安装失败摘要", () => {
 
 describe("小白安装契约", () => {
   it("要求先启用微信 ClawBot，并在主会话直接展示二维码图片", () => {
-    const repoRoot = path.resolve(import.meta.dirname, "..", "..", "..");
+    const repoRoot = path.resolve(testDir, "..", "..", "..");
     const read = (name) => fs.readFileSync(path.join(repoRoot, name), "utf8");
     const readme = read("README.md");
     const install = read("INSTALL.md");
@@ -257,7 +260,7 @@ describe("小白安装契约", () => {
   });
 
   it("把历史工程经验固化为仓库级开发约定", () => {
-    const repoRoot = path.resolve(import.meta.dirname, "..", "..", "..");
+    const repoRoot = path.resolve(testDir, "..", "..", "..");
     const agents = fs.readFileSync(path.join(repoRoot, "AGENTS.md"), "utf8");
 
     for (const rule of [
@@ -272,7 +275,7 @@ describe("小白安装契约", () => {
   });
 
   it("CI 明确检查 macOS/Linux 的 x64 与 arm64 依赖解析", () => {
-    const repoRoot = path.resolve(import.meta.dirname, "..", "..", "..");
+    const repoRoot = path.resolve(testDir, "..", "..", "..");
     const workflow = fs.readFileSync(
       path.join(repoRoot, ".github", "workflows", "ci.yml"),
       "utf8",
@@ -390,7 +393,7 @@ describe("安装脚本语法", () => {
     if (!hasSh()) return;
     const scriptPath = path.resolve("scripts", script);
     const result = spawnSync("sh", ["-n", scriptPath], {
-      cwd: path.resolve(import.meta.dirname, ".."),
+      cwd: path.resolve(testDir, ".."),
       encoding: "utf8",
     });
     expect(result.stderr).toBe("");
@@ -413,7 +416,7 @@ describe("安装脚本语法", () => {
       "uninstall-scheduled-task.ps1",
     ]) {
       const scriptPath = path.resolve(
-        import.meta.dirname,
+        testDir,
         "..",
         "scripts",
         script,
