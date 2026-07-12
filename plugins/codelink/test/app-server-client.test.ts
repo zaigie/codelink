@@ -29,8 +29,20 @@ rl.on("line", (line) => {
   if (request.method === "initialize") {
     send({ id: request.id, result: { codexHome: "/tmp" } });
   } else if (request.method === "thread/start") {
+    if ("threadSource" in request.params) {
+      send({ id: request.id, error: { code: 400, message: "unexpected threadSource" } });
+      return;
+    }
+    if (!request.params.developerInstructions.includes("CodeLink")) {
+      send({ id: request.id, error: { code: 400, message: "missing developerInstructions" } });
+      return;
+    }
     send({ id: request.id, result: { thread: { id: "app-thread-123" } } });
   } else if (request.method === "turn/start") {
+    if (request.params.input[0].text !== "do the work") {
+      send({ id: request.id, error: { code: 400, message: "polluted user prompt" } });
+      return;
+    }
     send({ id: request.id, result: { turn: { id: "turn-1", status: "inProgress" } } });
     send({ method: "item/completed", params: {
       threadId: request.params.threadId,
@@ -54,6 +66,7 @@ rl.on("line", (line) => {
         sandboxMode: "workspace-write",
         approvalPolicy: "never",
         networkAccessEnabled: false,
+        developerInstructions: "CodeLink task rules",
       },
       "do the work",
     );

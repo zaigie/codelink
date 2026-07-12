@@ -9,6 +9,12 @@ import {
 import { CodelinkConfig } from "./config.js";
 import { StateStore, TaskRecord } from "./state.js";
 
+const INCOMING_TASK_INSTRUCTIONS = [
+  "这是一条从微信 CodeLink 收到的独立任务。",
+  "请直接完成任务；如果信息不足，请在最终回复中明确说明缺少什么。",
+  "不要访问当前用户的其他项目，除非任务文字明确给出了路径。",
+].join("\n");
+
 export type RunTaskInput = {
   messageId: string;
   fromUserId: string;
@@ -59,15 +65,10 @@ export class CodexTaskRunner implements TaskRunner {
           sandboxMode: this.config.sandboxMode,
           approvalPolicy: this.config.approvalPolicy,
           networkAccessEnabled: this.config.networkAccessEnabled,
+          developerInstructions: INCOMING_TASK_INSTRUCTIONS,
           ...(this.config.model ? { model: this.config.model } : {}),
         },
-        [
-          "这是一条从微信 CodeLink 收到的独立任务。",
-          "请直接完成任务；如果信息不足，请在最终回复中明确说明缺少什么。",
-          "不要访问当前用户的其他项目，除非任务文字明确给出了路径。",
-          "",
-          input.prompt,
-        ].join("\n"),
+        input.prompt,
       );
       const completed: TaskRecord = {
         ...record,

@@ -22,6 +22,6 @@ CodeLink exposes tools from the `codelink` MCP server. Use the smallest tool tha
 
 ## Boundaries
 
-- Incoming WeChat messages create independent Codex threads in generated task workspaces; they are not attached to the current repository.
+- Incoming WeChat messages start independent Codex sessions in generated workspaces. They are not attached to the current repository, and they are not guaranteed to appear in the live Codex App sidebar.
 - Do not use CodeLink to add human-in-the-loop approval behavior. The current version only creates tasks and sends notifications.
 - Never reveal or request the stored bot token through a tool response.

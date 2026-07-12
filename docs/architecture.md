@@ -8,9 +8,17 @@ The MCP server communicates only with `http://127.0.0.1:18791`. No bot token is 
 
 ## Task creation semantics
 
-Each accepted incoming text message starts an official `codex app-server` subprocess, calls `thread/start` and `turn/start`, and creates a new Codex App-visible task with its own generated workspace under `~/Documents/Codex/CodeLink/<date>/<task-id>`.
+Each accepted incoming text message starts an official `codex app-server` subprocess, calls `thread/start` and `turn/start`, and creates a new independent Codex session with its own generated workspace under `~/Documents/Codex/CodeLink/<date>/<task-id>`.
 
-This deliberately avoids attaching incoming work to the CodeLink repository or any other existing project. App Server persists the thread with the desktop-compatible source classification in the normal Codex session store, so it appears alongside other Codex App tasks. The JavaScript Codex SDK is intentionally not used here because its automation threads are persisted with the `exec` source and are filtered out of the App task list.
+The incoming WeChat text is the only user message. CodeLink safety rules are passed through `developerInstructions`, so they do not pollute the user request.
+
+This deliberately avoids attaching incoming work to the CodeLink repository or any other existing project. App Server persists the thread in the normal Codex session store and returns its thread ID. A separately launched App Server cannot publish its live `thread/started` event to the already-running desktop App connection, so sidebar visibility is not part of the contract.
+
+## Standalone WeChat login
+
+The default login path directly calls Tencent iLink's QR endpoints with an empty `local_token_list` when no CodeLink session exists. It neither imports nor reads OpenClaw state. After confirmation, only CodeLink-owned files under `~/.codelink` are written.
+
+OpenClaw import/export remains an optional migration utility for users who explicitly need to preserve an existing Bot identity. It is not part of installation or first login.
 
 ## Reply context
 

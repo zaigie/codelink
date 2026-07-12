@@ -10,6 +10,7 @@ export type AppServerRunOptions = {
   approvalPolicy: ApprovalPolicy;
   networkAccessEnabled: boolean;
   model?: string;
+  developerInstructions?: string;
 };
 
 export type AppServerRunResult = {
@@ -59,7 +60,6 @@ export class StdioCodexAppServer implements CodexAppServer {
           version: "0.1.0",
         },
         capabilities: {
-          experimentalApi: true,
           requestAttestation: false,
           optOutNotificationMethods: [
             "command/exec/outputDelta",
@@ -78,6 +78,9 @@ export class StdioCodexAppServer implements CodexAppServer {
         approvalPolicy: options.approvalPolicy,
         sandbox: options.sandboxMode,
         ephemeral: false,
+        ...(options.developerInstructions
+          ? { developerInstructions: options.developerInstructions }
+          : {}),
         ...(options.model ? { model: options.model } : {}),
       })) as { thread?: { id?: string } };
       const threadId = threadResponse.thread?.id;

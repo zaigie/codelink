@@ -48,8 +48,11 @@ describe("CodexTaskRunner", () => {
         cwd: result.workspace,
         sandboxMode: "workspace-write",
         approvalPolicy: "never",
+        developerInstructions: expect.stringContaining(
+          "这是一条从微信 CodeLink 收到的独立任务",
+        ),
       }),
-      expect.stringContaining("do the work"),
+      "do the work",
     );
     expect(store.findTask("m1")).toMatchObject({
       status: "completed",
