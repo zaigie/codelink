@@ -1,4 +1,4 @@
-![CodeLink — Codex 与微信之间的桥梁](assets/codelink_banner.png)
+![CodeLink — Codex 与微信之间的桥梁](assets/codelink_banner.svg)
 
 # CodeLink
 
