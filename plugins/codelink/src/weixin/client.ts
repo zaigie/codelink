@@ -193,7 +193,13 @@ export class WeixinClient {
       });
       this.throwForIlinkError("sendtyping", typingResponse);
     } catch (error) {
-      this.typingTickets.delete(this.typingTicketCacheKey(params));
+      if (
+        error instanceof WeixinApiError &&
+        ((typeof error.ret === "number" && error.ret !== 0) ||
+          (typeof error.errcode === "number" && error.errcode !== 0))
+      ) {
+        this.typingTickets.delete(this.typingTicketCacheKey(params));
+      }
       throw error;
     }
   }
