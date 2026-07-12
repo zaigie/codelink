@@ -1567,10 +1567,10 @@ var require_segments = __commonJS({
       const segs = getSegmentsFromString(data, Utils.isKanjiModeEnabled());
       const nodes = buildNodes(segs);
       const graph = buildGraph(nodes, version);
-      const path7 = dijkstra.find_path(graph.map, "start", "end");
+      const path6 = dijkstra.find_path(graph.map, "start", "end");
       const optimizedSegs = [];
-      for (let i = 1; i < path7.length - 1; i++) {
-        optimizedSegs.push(graph.table[path7[i]].node);
+      for (let i = 1; i < path6.length - 1; i++) {
+        optimizedSegs.push(graph.table[path6[i]].node);
       }
       return exports2.fromArray(mergeSegments(optimizedSegs));
     };
@@ -4047,7 +4047,7 @@ var require_png2 = __commonJS({
       });
       png.pack();
     };
-    exports2.renderToFile = function renderToFile(path7, qrData, options, cb) {
+    exports2.renderToFile = function renderToFile(path6, qrData, options, cb) {
       if (typeof cb === "undefined") {
         cb = options;
         options = void 0;
@@ -4058,7 +4058,7 @@ var require_png2 = __commonJS({
         called = true;
         cb.apply(null, args);
       };
-      const stream = fs8.createWriteStream(path7);
+      const stream = fs8.createWriteStream(path6);
       stream.on("error", done);
       stream.on("close", done);
       exports2.renderToFileStream(stream, qrData, options);
@@ -4120,14 +4120,14 @@ var require_utf8 = __commonJS({
       }
       return output;
     };
-    exports2.renderToFile = function renderToFile(path7, qrData, options, cb) {
+    exports2.renderToFile = function renderToFile(path6, qrData, options, cb) {
       if (typeof cb === "undefined") {
         cb = options;
         options = void 0;
       }
       const fs8 = require("fs");
       const utf8 = exports2.render(qrData, options);
-      fs8.writeFile(path7, utf8, cb);
+      fs8.writeFile(path6, utf8, cb);
     };
   }
 });
@@ -4248,7 +4248,7 @@ var require_svg_tag = __commonJS({
       return str;
     }
     function qrToPath(data, size, margin) {
-      let path7 = "";
+      let path6 = "";
       let moveBy = 0;
       let newRow = false;
       let lineLength = 0;
@@ -4259,19 +4259,19 @@ var require_svg_tag = __commonJS({
         if (data[i]) {
           lineLength++;
           if (!(i > 0 && col > 0 && data[i - 1])) {
-            path7 += newRow ? svgCmd("M", col + margin, 0.5 + row + margin) : svgCmd("m", moveBy, 0);
+            path6 += newRow ? svgCmd("M", col + margin, 0.5 + row + margin) : svgCmd("m", moveBy, 0);
             moveBy = 0;
             newRow = false;
           }
           if (!(col + 1 < size && data[i + 1])) {
-            path7 += svgCmd("h", lineLength);
+            path6 += svgCmd("h", lineLength);
             lineLength = 0;
           }
         } else {
           moveBy++;
         }
       }
-      return path7;
+      return path6;
     }
     exports2.render = function render(qrData, options, cb) {
       const opts = Utils.getOptions(options);
@@ -4279,10 +4279,10 @@ var require_svg_tag = __commonJS({
       const data = qrData.modules.data;
       const qrcodesize = size + opts.margin * 2;
       const bg = !opts.color.light.a ? "" : "<path " + getColorAttrib(opts.color.light, "fill") + ' d="M0 0h' + qrcodesize + "v" + qrcodesize + 'H0z"/>';
-      const path7 = "<path " + getColorAttrib(opts.color.dark, "stroke") + ' d="' + qrToPath(data, size, opts.margin) + '"/>';
+      const path6 = "<path " + getColorAttrib(opts.color.dark, "stroke") + ' d="' + qrToPath(data, size, opts.margin) + '"/>';
       const viewBox = 'viewBox="0 0 ' + qrcodesize + " " + qrcodesize + '"';
       const width = !opts.width ? "" : 'width="' + opts.width + '" height="' + opts.width + '" ';
-      const svgTag = '<svg xmlns="http://www.w3.org/2000/svg" ' + width + viewBox + ' shape-rendering="crispEdges">' + bg + path7 + "</svg>\n";
+      const svgTag = '<svg xmlns="http://www.w3.org/2000/svg" ' + width + viewBox + ' shape-rendering="crispEdges">' + bg + path6 + "</svg>\n";
       if (typeof cb === "function") {
         cb(null, svgTag);
       }
@@ -4296,7 +4296,7 @@ var require_svg = __commonJS({
   "node_modules/qrcode/lib/renderer/svg.js"(exports2) {
     var svgTagRenderer = require_svg_tag();
     exports2.render = svgTagRenderer.render;
-    exports2.renderToFile = function renderToFile(path7, qrData, options, cb) {
+    exports2.renderToFile = function renderToFile(path6, qrData, options, cb) {
       if (typeof cb === "undefined") {
         cb = options;
         options = void 0;
@@ -4304,7 +4304,7 @@ var require_svg = __commonJS({
       const fs8 = require("fs");
       const svgTag = exports2.render(qrData, options);
       const xmlStr = '<?xml version="1.0" encoding="utf-8"?><!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">' + svgTag;
-      fs8.writeFile(path7, xmlStr, cb);
+      fs8.writeFile(path6, xmlStr, cb);
     };
   }
 });
@@ -4462,8 +4462,8 @@ var require_server = __commonJS({
         cb
       };
     }
-    function getTypeFromFilename(path7) {
-      return path7.slice((path7.lastIndexOf(".") - 1 >>> 0) + 2).toLowerCase();
+    function getTypeFromFilename(path6) {
+      return path6.slice((path6.lastIndexOf(".") - 1 >>> 0) + 2).toLowerCase();
     }
     function getRendererFromType(type) {
       switch (type) {
@@ -4527,17 +4527,17 @@ var require_server = __commonJS({
       const renderer = getRendererFromType(params.opts.type);
       return render(renderer.renderToBuffer, text, params);
     };
-    exports2.toFile = function toFile(path7, text, opts, cb) {
-      if (typeof path7 !== "string" || !(typeof text === "string" || typeof text === "object")) {
+    exports2.toFile = function toFile(path6, text, opts, cb) {
+      if (typeof path6 !== "string" || !(typeof text === "string" || typeof text === "object")) {
         throw new Error("Invalid argument");
       }
       if (arguments.length < 3 && !canPromise()) {
         throw new Error("Too few arguments provided");
       }
       const params = checkParams(text, opts, cb);
-      const type = params.opts.type || getTypeFromFilename(path7);
+      const type = params.opts.type || getTypeFromFilename(path6);
       const renderer = getRendererFromType(type);
-      const renderToFile = renderer.renderToFile.bind(null, path7);
+      const renderToFile = renderer.renderToFile.bind(null, path6);
       return render(renderToFile, text, params);
     };
     exports2.toFileStream = function toFileStream(stream, text, opts) {
@@ -5631,12 +5631,10 @@ var require_main = __commonJS({
 
 // src/cli.ts
 var import_node_fs7 = __toESM(require("node:fs"), 1);
-var import_node_crypto5 = require("node:crypto");
+var import_node_crypto4 = require("node:crypto");
 
 // src/codex-task-runner.ts
 var import_node_fs2 = __toESM(require("node:fs"), 1);
-var import_node_path2 = __toESM(require("node:path"), 1);
-var import_node_crypto = require("node:crypto");
 
 // src/app-server-client.ts
 var import_node_fs = __toESM(require("node:fs"), 1);
@@ -6061,8 +6059,8 @@ var CodexTaskRunner = class {
     const bindingAtTaskStart = input.conversationAtReceipt === void 0 ? snapshotAtTaskStart.binding : input.conversationAtReceipt;
     const generationAtTaskStart = input.conversationGenerationAtReceipt ?? snapshotAtTaskStart.generation;
     const conversation = input.startNew ? null : bindingAtTaskStart;
-    const workspace = conversation ? void 0 : this.createTaskWorkspace();
-    const executionCwd = workspace ?? this.ensureTaskWorkspaceRoot();
+    const executionCwd = this.ensureTaskWorkspaceRoot();
+    const workspace = conversation ? void 0 : executionCwd;
     const startedAt = (/* @__PURE__ */ new Date()).toISOString();
     const record = {
       ...existing ?? {
@@ -6156,14 +6154,6 @@ var CodexTaskRunner = class {
       throw error;
     }
   }
-  createTaskWorkspace() {
-    const now = /* @__PURE__ */ new Date();
-    const date = now.toISOString().slice(0, 10);
-    const taskId = `${now.toISOString().replaceAll(":", "-").replace(".", "-")}-${(0, import_node_crypto.randomUUID)().slice(0, 8)}`;
-    const workspace = import_node_path2.default.join(this.config.taskWorkspaceRoot, date, taskId);
-    import_node_fs2.default.mkdirSync(workspace, { recursive: true, mode: 448 });
-    return workspace;
-  }
   ensureTaskWorkspaceRoot() {
     import_node_fs2.default.mkdirSync(this.config.taskWorkspaceRoot, {
       recursive: true,
@@ -6207,10 +6197,10 @@ function isCodexThreadId(value) {
 }
 
 // src/weixin/delivery.ts
-var import_node_crypto3 = require("node:crypto");
+var import_node_crypto2 = require("node:crypto");
 
 // src/weixin/client.ts
-var import_node_crypto2 = __toESM(require("node:crypto"), 1);
+var import_node_crypto = __toESM(require("node:crypto"), 1);
 var REGULAR_TIMEOUT_MS = 15e3;
 var LONG_POLL_TIMEOUT_MS = 4e4;
 var TYPING_TICKET_TTL_MS = 24 * 60 * 60 * 1e3;
@@ -6300,7 +6290,7 @@ var WeixinClient = class {
           msg: {
             from_user_id: "",
             to_user_id: params.toUserId,
-            client_id: params.clientId ?? `codelink-${(0, import_node_crypto2.randomUUID)()}`,
+            client_id: params.clientId ?? `codelink-${(0, import_node_crypto.randomUUID)()}`,
             message_type: 2,
             message_state: 2,
             context_token: params.contextToken,
@@ -6410,7 +6400,7 @@ var WeixinClient = class {
     };
   }
   headers(token) {
-    const randomUin = import_node_crypto2.default.randomBytes(4).readUInt32BE(0);
+    const randomUin = import_node_crypto.default.randomBytes(4).readUInt32BE(0);
     const [major = 0, minor = 0, patch = 0] = this.config.channelVersion.split(".").map((part) => Number.parseInt(part, 10) || 0);
     const clientVersion = (major & 255) << 16 | (minor & 255) << 8 | patch & 255;
     return {
@@ -6495,7 +6485,7 @@ var globalDeliveryQueue = Promise.resolve();
 var WeixinTextDelivery = class {
   constructor(sender, options = {}) {
     this.sender = sender;
-    this.clientIdFactory = options.clientIdFactory ?? (() => `codelink-${(0, import_node_crypto3.randomUUID)()}`);
+    this.clientIdFactory = options.clientIdFactory ?? (() => `codelink-${(0, import_node_crypto2.randomUUID)()}`);
     this.interChunkDelayMs = options.interChunkDelayMs ?? 200;
     this.retryDelaysMs = options.retryDelaysMs ?? [250, 750];
     this.sleep = options.sleep ?? ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)));
@@ -6675,7 +6665,7 @@ function splitRawUtf8Text(text, maxBytes) {
   return chunks;
 }
 function stableClientId(deliveryKey, chunkIndex) {
-  const digest = (0, import_node_crypto3.createHash)("sha256").update(`${deliveryKey}:${chunkIndex}`).digest("hex").slice(0, 32);
+  const digest = (0, import_node_crypto2.createHash)("sha256").update(`${deliveryKey}:${chunkIndex}`).digest("hex").slice(0, 32);
   return `codelink-${digest}`;
 }
 function splitUtf8Text(text, maxBytes) {
@@ -7806,8 +7796,8 @@ var DaemonClient = class {
 
 // src/doctor.ts
 var import_node_fs3 = __toESM(require("node:fs"), 1);
-var import_node_path3 = __toESM(require("node:path"), 1);
-var import_node_crypto4 = require("node:crypto");
+var import_node_path2 = __toESM(require("node:path"), 1);
+var import_node_crypto3 = require("node:crypto");
 function createDoctorReport(params) {
   const status = asRecord(params.daemonStatus);
   const receipt = params.store.loadInstallReceipt();
@@ -7835,7 +7825,7 @@ function validateRuntime(runtimeDir) {
   try {
     const manifest = asRecord(
       JSON.parse(
-        import_node_fs3.default.readFileSync(import_node_path3.default.join(runtimeDir, "runtime-manifest.json"), "utf8")
+        import_node_fs3.default.readFileSync(import_node_path2.default.join(runtimeDir, "runtime-manifest.json"), "utf8")
       )
     );
     const files = asRecord(manifest?.files);
@@ -7843,7 +7833,7 @@ function validateRuntime(runtimeDir) {
     for (const name of ["cli.cjs", "mcp.js"]) {
       const expected = files[name];
       if (typeof expected !== "string") return false;
-      const actual = (0, import_node_crypto4.createHash)("sha256").update(import_node_fs3.default.readFileSync(import_node_path3.default.join(runtimeDir, name))).digest("hex");
+      const actual = (0, import_node_crypto3.createHash)("sha256").update(import_node_fs3.default.readFileSync(import_node_path2.default.join(runtimeDir, name))).digest("hex");
       if (actual !== expected) return false;
     }
     return true;
@@ -7859,7 +7849,7 @@ function validatePlugin(receipt) {
     const manifest = asRecord(
       JSON.parse(
         import_node_fs3.default.readFileSync(
-          import_node_path3.default.join(receipt.pluginRoot, ".codex-plugin", "plugin.json"),
+          import_node_path2.default.join(receipt.pluginRoot, ".codex-plugin", "plugin.json"),
           "utf8"
         )
       )
@@ -7868,14 +7858,14 @@ function validatePlugin(receipt) {
     if (!installed) return { installed: false, mcpReady: false };
     const mcp = asRecord(
       JSON.parse(
-        import_node_fs3.default.readFileSync(import_node_path3.default.join(receipt.pluginRoot, ".mcp.json"), "utf8")
+        import_node_fs3.default.readFileSync(import_node_path2.default.join(receipt.pluginRoot, ".mcp.json"), "utf8")
       )
     );
     const servers = asRecord(mcp?.mcpServers);
     const codelink = asRecord(servers?.codelink);
     const args = Array.isArray(codelink?.args) ? codelink.args : [];
-    const mcpPath = import_node_path3.default.join(receipt.pluginRoot, "dist", "mcp.js");
-    const mcpHash = (0, import_node_crypto4.createHash)("sha256").update(import_node_fs3.default.readFileSync(mcpPath)).digest("hex");
+    const mcpPath = import_node_path2.default.join(receipt.pluginRoot, "dist", "mcp.js");
+    const mcpHash = (0, import_node_crypto3.createHash)("sha256").update(import_node_fs3.default.readFileSync(mcpPath)).digest("hex");
     const mcpReady = codelink?.command === "node" && args.includes("./dist/mcp.js") && mcpHash === receipt.mcpSha256;
     return { installed: true, mcpReady };
   } catch {
@@ -7889,25 +7879,25 @@ function asRecord(value) {
 // src/openclaw-state.ts
 var import_node_fs4 = __toESM(require("node:fs"), 1);
 var import_node_os = __toESM(require("node:os"), 1);
-var import_node_path4 = __toESM(require("node:path"), 1);
+var import_node_path3 = __toESM(require("node:path"), 1);
 function exportOpenClawState(params) {
-  const stateDir = import_node_path4.default.resolve(
-    params.stateDir || process.env.OPENCLAW_STATE_DIR || import_node_path4.default.join(import_node_os.default.homedir(), ".openclaw")
+  const stateDir = import_node_path3.default.resolve(
+    params.stateDir || process.env.OPENCLAW_STATE_DIR || import_node_path3.default.join(import_node_os.default.homedir(), ".openclaw")
   );
-  const accountsDir = import_node_path4.default.join(stateDir, "openclaw-weixin", "accounts");
+  const accountsDir = import_node_path3.default.join(stateDir, "openclaw-weixin", "accounts");
   const accountId = params.accountId || selectAccountId(stateDir, accountsDir);
-  const accountPath = import_node_path4.default.join(accountsDir, `${accountId}.json`);
+  const accountPath = import_node_path3.default.join(accountsDir, `${accountId}.json`);
   const account = readObject(accountPath);
   const token = stringValue(account.token);
   if (!token) throw new Error(`OpenClaw \u8D26\u53F7\u6587\u4EF6\u7F3A\u5C11 token\uFF1A${accountPath}`);
   const sync = readObject(
-    import_node_path4.default.join(accountsDir, `${accountId}.sync.json`),
+    import_node_path3.default.join(accountsDir, `${accountId}.sync.json`),
     true
   );
   const contextTokens = readStringMap(
-    import_node_path4.default.join(accountsDir, `${accountId}.context-tokens.json`)
+    import_node_path3.default.join(accountsDir, `${accountId}.context-tokens.json`)
   );
-  const openclawConfig = readObject(import_node_path4.default.join(stateDir, "openclaw.json"), true);
+  const openclawConfig = readObject(import_node_path3.default.join(stateDir, "openclaw.json"), true);
   const channel = readChannelConfig(openclawConfig, accountId);
   const bundle = {
     schemaVersion: 1,
@@ -7929,8 +7919,8 @@ function exportOpenClawState(params) {
       botAgent: stringValue(channel.account.botAgent) || stringValue(channel.section.botAgent)
     } : {}
   };
-  const outputPath = import_node_path4.default.resolve(params.outputPath);
-  import_node_fs4.default.mkdirSync(import_node_path4.default.dirname(outputPath), { recursive: true, mode: 448 });
+  const outputPath = import_node_path3.default.resolve(params.outputPath);
+  import_node_fs4.default.mkdirSync(import_node_path3.default.dirname(outputPath), { recursive: true, mode: 448 });
   import_node_fs4.default.writeFileSync(outputPath, `${JSON.stringify(bundle, null, 2)}
 `, {
     encoding: "utf8",
@@ -7943,7 +7933,7 @@ function exportOpenClawState(params) {
   return bundle;
 }
 function importOpenClawState(params) {
-  const inputPath = import_node_path4.default.resolve(params.inputPath);
+  const inputPath = import_node_path3.default.resolve(params.inputPath);
   const bundle = JSON.parse(
     import_node_fs4.default.readFileSync(inputPath, "utf8")
   );
@@ -7980,7 +7970,7 @@ function importOpenClawState(params) {
   };
 }
 function selectAccountId(stateDir, accountsDir) {
-  const indexPath = import_node_path4.default.join(stateDir, "openclaw-weixin", "accounts.json");
+  const indexPath = import_node_path3.default.join(stateDir, "openclaw-weixin", "accounts.json");
   try {
     const index = JSON.parse(import_node_fs4.default.readFileSync(indexPath, "utf8"));
     if (Array.isArray(index)) {
@@ -7996,7 +7986,7 @@ function selectAccountId(stateDir, accountsDir) {
     candidates = import_node_fs4.default.readdirSync(accountsDir).filter(
       (name) => name.endsWith(".json") && !name.endsWith(".sync.json") && !name.endsWith(".context-tokens.json")
     ).sort(
-      (a, b) => import_node_fs4.default.statSync(import_node_path4.default.join(accountsDir, a)).mtimeMs - import_node_fs4.default.statSync(import_node_path4.default.join(accountsDir, b)).mtimeMs
+      (a, b) => import_node_fs4.default.statSync(import_node_path3.default.join(accountsDir, a)).mtimeMs - import_node_fs4.default.statSync(import_node_path3.default.join(accountsDir, b)).mtimeMs
     );
   } catch {
   }
@@ -8054,13 +8044,13 @@ function normalizeBaseUrl(value) {
 
 // src/state.ts
 var import_node_fs5 = __toESM(require("node:fs"), 1);
-var import_node_path6 = __toESM(require("node:path"), 1);
+var import_node_path5 = __toESM(require("node:path"), 1);
 
 // src/config.ts
 var import_node_os2 = __toESM(require("node:os"), 1);
-var import_node_path5 = __toESM(require("node:path"), 1);
+var import_node_path4 = __toESM(require("node:path"), 1);
 function resolveStateDir() {
-  return process.env.CODELINK_STATE_DIR?.trim() || import_node_path5.default.join(import_node_os2.default.homedir(), ".codelink");
+  return process.env.CODELINK_STATE_DIR?.trim() || import_node_path4.default.join(import_node_os2.default.homedir(), ".codelink");
 }
 function defaultConfig() {
   return {
@@ -8075,7 +8065,7 @@ function defaultConfig() {
       botAgent: "CodeLink/0.1.0"
     },
     codex: {
-      taskWorkspaceRoot: import_node_path5.default.join(
+      taskWorkspaceRoot: import_node_path4.default.join(
         import_node_os2.default.homedir(),
         "Documents",
         "Codex",
@@ -8117,7 +8107,7 @@ var StateStore = class {
     }
   }
   path(name) {
-    return import_node_path6.default.join(this.dir, name);
+    return import_node_path5.default.join(this.dir, name);
   }
   loadConfig() {
     return parseConfig(this.readJson("config.json"));
@@ -8514,7 +8504,7 @@ async function main() {
       const runner = new CodexTaskRunner(config.codex, store);
       printJson(
         await runner.runTask({
-          messageId: `local-${(0, import_node_crypto5.randomUUID)()}`,
+          messageId: `local-${(0, import_node_crypto4.randomUUID)()}`,
           fromUserId: "local-cli",
           prompt,
           startNew: true

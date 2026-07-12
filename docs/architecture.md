@@ -30,7 +30,7 @@ MCP 只访问 `http://127.0.0.1:18791`，不会获得微信 bot token。
   → 发送带固定尾注的通知
 ```
 
-CodeLink 只持久化会话路由所需的 thread ID；完整对话历史仍由 Codex 管理。新建会话才创建 `~/Documents/Codex/CodeLink/<date>/...` 工作目录并注入 CodeLink developer instructions。恢复已有桌面任务时，只提交 `threadId` 和用户输入，不覆盖原任务的 cwd、模型、sandbox、approval policy 或 developer instructions。
+CodeLink 只持久化会话路由所需的 thread ID；完整对话历史仍由 Codex 管理。微信新建的不同会话拥有独立 thread ID，但统一使用 `~/Documents/Codex/CodeLink` cwd 并注入 CodeLink developer instructions，不再产生每会话一个时间戳目录。该稳定 cwd 供 Codex 自身按项目归组；CodeLink 不控制远程界面的刷新或历史项目呈现。恢复已有桌面任务时，只提交 `threadId` 和用户输入，不覆盖原任务的 cwd、模型、sandbox、approval policy 或 developer instructions。
 
 ## 新会话意图
 
