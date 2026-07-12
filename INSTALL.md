@@ -4,10 +4,10 @@
 
 ## 安装结论
 
-- 不安装、不启动 OpenClaw，也不从 `~/.openclaw` 或其他机器复制 session/token；
+- 不安装、不启动 OpenClaw，也不从当前用户主目录下的 `.openclaw` 或其他机器复制 session/token；
 - 扫码前提醒用户在微信 **设置 → 插件** 中找到并启用 **微信 ClawBot**；
 - 首次安装直接使用 CodeLink 的腾讯 iLink 登录，展示二维码并等待用户扫码；
-- 默认把源码放在用户自己的持久目录 `~/.codelink/source`，而不是临时工作区；
+- 默认把源码放在当前用户主目录下的 `.codelink/source`（Windows 路径由 PowerShell 的 `Join-Path` 生成），而不是临时工作区；
 - 使用同一个 Node 跨平台安装器，再按系统注册用户态后台服务；
 - 任何输出、日志、截图、提交和聊天消息都不得包含 bot token、context token 或完整 session。
 
@@ -94,10 +94,10 @@ node <源码目录>/plugins/codelink/scripts/setup.mjs
 1. 校验仓库内预构建 MCP/CLI 运行时的 SHA-256 清单，普通安装不运行 npm；
 2. 添加当前持久源码为本地 marketplace，并安装 `codelink` 插件；
 3. 若没有现有 CodeLink session，启动腾讯 iLink 登录；
-4. 复制最小运行时到 `~/.codelink/runtime`，注册当前系统的用户态后台服务；
+4. 复制最小运行时到状态目录的 `runtime` 子目录；状态目录优先使用 `CODELINK_STATE_DIR`，否则使用当前用户主目录下的 `.codelink`；随后注册当前系统的用户态后台服务；
 5. 通过不含用户标识的 `127.0.0.1:18791/healthz` 验证 daemon。
 
-登录期间，安装器使用 PNG-only 模式生成 `~/.codelink/login-qr.png`（或 `CODELINK_STATE_DIR` 下同名文件）。Codex 必须立即读取该 PNG，并把二维码图片直接发在当前主会话中，然后暂停等待扫码。不能只打印文件路径、备用链接或终端二维码，也不能让用户展开执行过程才能看到图片；不得把二维码内容解析成文本输出。二维码内容不会写入安装终端日志，登录成功或超时后会清理 PNG。已有 `weixin-session.json` 时安装器会保留登录态并跳过扫码。
+登录期间，安装器使用 PNG-only 模式在状态目录生成 `login-qr.png`；状态目录优先使用 `CODELINK_STATE_DIR`，否则由系统路径 API 解析为当前用户主目录下的 `.codelink`。Codex 必须立即读取该 PNG，并把二维码图片直接发在当前主会话中，然后暂停等待扫码。不能只打印文件路径、备用链接或终端二维码，也不能让用户展开执行过程才能看到图片；不得把二维码内容解析成文本输出。二维码内容不会写入安装终端日志，登录成功或超时后会清理 PNG。已有 `weixin-session.json` 时安装器会保留登录态并跳过扫码。
 
 可选参数只用于明确场景：
 
@@ -122,12 +122,26 @@ node <源码目录>/plugins/codelink/scripts/setup.mjs
 8. 另一个桌面任务通知后，以最近通知的任务为当前绑定；
 9. 发送一个需要数秒的微信请求，处理期间应显示原生“正在输入”，完成后只收到 Codex 正文，不出现消息 ID、thread ID 或“会话已回复”标签；
 10. `/new 新的问题` 的最终正文前只出现一次旧上下文不会带入的提示。
-11. 连续创建两个微信新会话时，thread ID 不同，但 App Server 返回的 cwd 都是同一个 `~/Documents/Codex/CodeLink`；不得再出现按日期或时间戳生成的会话工作目录。
+11. 连续创建两个微信新会话时，thread ID 不同，但 App Server 返回的 cwd 都是当前用户主目录下同一个由系统路径 API 生成的 `Documents/Codex/CodeLink`；不得再出现按日期或时间戳生成的会话工作目录。
 
-安装器会写入不含用户标识的私有安装回执。可运行下面的安全自检；它只输出布尔状态，不输出账号、微信用户 ID、thread ID、token 或本地路径：
+安装器会写入不含用户标识的私有安装回执。可运行下面的安全自检；它只输出布尔状态，不输出账号、微信用户 ID、thread ID、token 或本地路径。不要把 POSIX 的 `~` 简写直接复制到 Windows；按当前 shell 解析状态目录。
 
-```text
-node ~/.codelink/runtime/cli.cjs doctor
+macOS/Linux（POSIX shell）：
+
+```bash
+STATE_DIR="${CODELINK_STATE_DIR:-$HOME/.codelink}"
+node "$STATE_DIR/runtime/cli.cjs" doctor
+```
+
+Windows PowerShell：
+
+```powershell
+$StateDir = if ($env:CODELINK_STATE_DIR) {
+    $env:CODELINK_STATE_DIR
+} else {
+    Join-Path $HOME ".codelink"
+}
+node (Join-Path $StateDir "runtime\cli.cjs") doctor
 ```
 
 `daemonHealthy=true` 只说明后台与微信轮询正常；`pluginInstalled` 和 `mcpBundleReady` 说明插件及 MCP bundle 已安装。Codex 任务中的工具加载仍以“新建任务”为边界；新任务仍看不到 CodeLink 时，重启 Codex App 后再检查。
@@ -136,7 +150,7 @@ node ~/.codelink/runtime/cli.cjs doctor
 
 | 系统 | 状态与日志 |
 | --- | --- |
-| macOS | `launchctl print gui/$(id -u)/ai.codelink.daemon`；日志在 `~/.codelink/daemon.*.log` |
+| macOS | `launchctl print gui/$(id -u)/ai.codelink.daemon`；日志默认在 `$HOME/.codelink/daemon.*.log` |
 | Linux | `systemctl --user status ai.codelink.daemon`；`journalctl --user -u ai.codelink.daemon` |
 | Windows | `Get-ScheduledTask -TaskName "CodeLink Daemon"`；日志在 `$HOME\.codelink\daemon.*.log` |
 
@@ -144,7 +158,7 @@ node ~/.codelink/runtime/cli.cjs doctor
 
 用户再次给 Codex 同一段安装提示即可。Codex 应对持久源码执行 `git pull --ff-only`，然后重新运行 `setup.mjs`。安装器替换预构建 runtime、重装本地插件并重启服务，但保留已有微信 session、同步游标、context token、会话绑定和任务记录，不应要求重复扫码。更新完成后新建 Codex 任务加载新版插件。
 
-更新不会改写或删除已有 Codex thread。旧版本已经创建的时间戳项目会继续作为历史记录保留；更新后的微信新会话统一归入 `~/Documents/Codex/CodeLink`。
+更新不会改写或删除已有 Codex thread。旧版本已经创建的时间戳项目会继续作为历史记录保留；更新后的微信新会话统一归入当前用户主目录下由系统路径 API 生成的 `Documents/Codex/CodeLink`。
 
 ## 卸载后台服务
 
@@ -156,7 +170,7 @@ Linux:  sh <源码目录>/plugins/codelink/scripts/uninstall-systemd-user.sh
 Windows: powershell -NoProfile -ExecutionPolicy Bypass -File <源码目录>\plugins\codelink\scripts\uninstall-scheduled-task.ps1
 ```
 
-删除 `~/.codelink` 会同时删除凭证、绑定和默认源码目录，必须由用户明确确认后再执行。
+删除状态目录（`CODELINK_STATE_DIR`，未设置时为当前用户主目录下的 `.codelink`）会删除凭证和绑定；默认源码也位于当前用户主目录下的 `.codelink/source`，若它落在同一目录中也会被删除。执行前必须获得用户明确确认。
 
 ## 平台说明与故障排查
 

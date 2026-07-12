@@ -7,7 +7,7 @@ description: Use CodeLink when the user asks Codex to notify them on WeChat, bin
 
 CodeLink exposes tools from the `codelink` MCP server. Use the smallest tool that satisfies the request.
 
-If the CodeLink skill is visible but its MCP tools are not, do not describe the installation as broken based only on the current task. Explain that plugin tools are loaded at task creation, ask the user to create a new Codex task, and recommend restarting Codex App if a new task still lacks the tools. The safe local fallback is `node ~/.codelink/runtime/cli.cjs doctor`; it distinguishes plugin/runtime readiness from daemon and WeChat readiness without exposing identifiers. Never bypass a missing MCP tool by calling the daemon HTTP API directly for a write action.
+If the CodeLink skill is visible but its MCP tools are not, do not describe the installation as broken based only on the current task. Explain that plugin tools are loaded at task creation, ask the user to create a new Codex task, and recommend restarting Codex App if a new task still lacks the tools. The safe local fallback is the runtime CLI's `doctor` command; it distinguishes plugin/runtime readiness from daemon and WeChat readiness without exposing identifiers. Resolve its state directory from `CODELINK_STATE_DIR` when set, otherwise from the current user's home plus `.codelink`. Do not present POSIX `~` syntax as a cross-platform path. On a POSIX shell, use `STATE_DIR="${CODELINK_STATE_DIR:-$HOME/.codelink}"; node "$STATE_DIR/runtime/cli.cjs" doctor`. On PowerShell, use `$StateDir = if ($env:CODELINK_STATE_DIR) { $env:CODELINK_STATE_DIR } else { Join-Path $HOME ".codelink" }; node (Join-Path $StateDir "runtime\cli.cjs") doctor`. Never bypass a missing MCP tool by calling the daemon HTTP API directly for a write action.
 
 ## Send and bind
 
@@ -34,7 +34,7 @@ If the CodeLink skill is visible but its MCP tools are not, do not describe the 
 
 ## Boundaries
 
-- New conversations created from WeChat use separate thread ids but share the configured CodeLink workspace instead of per-conversation directories. This provides a stable cwd for Codex project grouping, but CodeLink does not control remote UI refresh or historical project presentation. A bound desktop conversation keeps its existing Codex context and project.
+- New conversations created from WeChat use separate thread ids but share the configured CodeLink workspace instead of per-conversation directories. The default workspace is the `Documents/Codex/CodeLink` path under the current user's home, joined with the platform's native path API rather than a hard-coded separator. This provides a stable cwd for Codex project grouping, but CodeLink does not control remote UI refresh or historical project presentation. A bound desktop conversation keeps its existing Codex context and project.
 - Do not claim that a WeChat-created conversation will appear in the live Codex App sidebar.
 - Do not treat conversation continuation as human-in-the-loop approval. CodeLink does not approve tool calls or permission requests through WeChat.
 - Never reveal or request the stored bot token through a tool response.

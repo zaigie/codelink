@@ -30,7 +30,7 @@ MCP 只访问 `http://127.0.0.1:18791`，不会获得微信 bot token。
   → 发送带固定尾注的通知
 ```
 
-CodeLink 只持久化会话路由所需的 thread ID；完整对话历史仍由 Codex 管理。微信新建的不同会话拥有独立 thread ID，但统一使用 `~/Documents/Codex/CodeLink` cwd 并注入 CodeLink developer instructions，不再产生每会话一个时间戳目录。该稳定 cwd 供 Codex 自身按项目归组；CodeLink 不控制远程界面的刷新或历史项目呈现。恢复已有桌面任务时，只提交 `threadId` 和用户输入，不覆盖原任务的 cwd、模型、sandbox、approval policy 或 developer instructions。
+CodeLink 只持久化会话路由所需的 thread ID；完整对话历史仍由 Codex 管理。微信新建的不同会话拥有独立 thread ID，但统一使用当前用户主目录下由 `path.join(os.homedir(), "Documents", "Codex", "CodeLink")` 生成的 cwd 并注入 CodeLink developer instructions，不再产生每会话一个时间戳目录。路径分隔符由 Node.js 按平台生成。该稳定 cwd 供 Codex 自身按项目归组；CodeLink 不控制远程界面的刷新或历史项目呈现。恢复已有桌面任务时，只提交 `threadId` 和用户输入，不覆盖原任务的 cwd、模型、sandbox、approval policy 或 developer instructions。
 
 ## 新会话意图
 
@@ -79,7 +79,7 @@ daemon 在接受任务时记录消息到达时的绑定，保证这条微信消�
 
 ## 独立登录
 
-默认登录直接调用腾讯 iLink 二维码接口。空 CodeLink 状态使用空 `local_token_list`，不读取 `~/.openclaw`。二维码过期时在同一登录超时窗口内自动获取新码、重写 PNG 并再次触发展示回调。安装器使用 PNG-only 输出，避免可扫码内容进入终端日志；成功或超时后清理短期 PNG。直接 CLI 登录仍保留终端二维码兼容模式。OpenClaw 导入导出只用于用户明确要求保留既有 Bot 身份的可选迁移。
+默认登录直接调用腾讯 iLink 二维码接口。空 CodeLink 状态使用空 `local_token_list`，不读取当前用户主目录下的 `.openclaw`。二维码过期时在同一登录超时窗口内自动获取新码、重写 PNG 并再次触发展示回调。安装器使用 PNG-only 输出，避免可扫码内容进入终端日志；成功或超时后清理短期 PNG。直接 CLI 登录仍保留终端二维码兼容模式。OpenClaw 导入导出只用于用户明确要求保留既有 Bot 身份的可选迁移。
 
 ## 跨平台运行与常驻
 

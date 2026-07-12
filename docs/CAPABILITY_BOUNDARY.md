@@ -8,7 +8,7 @@ CodeLink 当前的核心能力是：为每个授权微信用户维护一个“�
 
 - CodeLink 可以在空状态目录中直接请求腾讯 iLink 二维码并完成登录；
 - 不需要安装、运行或部署 OpenClaw，也不需要复制其 session；
-- 微信凭证只保存在当前用户的 `~/.codelink`；Unix 文件使用 `0600`，Windows 使用用户配置目录继承的 ACL。
+- 微信凭证只保存在 CodeLink 状态目录；它优先使用 `CODELINK_STATE_DIR`，否则由系统路径 API 解析为当前用户主目录下的 `.codelink`。Unix 文件使用 `0600`，Windows 使用用户配置目录继承的 ACL。
 
 ### 当前会话
 
@@ -34,7 +34,7 @@ typing 线协议依据腾讯公开、MIT 授权且随包发布源码的 [`@tence
 - `/new <请求>` 立即新建会话并执行请求；
 - “开个新会话”“重新开一个会话，……”或“换个话题：……”等句首明确意图也能切换；
 - 讨论“如何实现新建会话功能”等普通请求不会触发切换；
-- 每个新会话有独立 thread ID，但 `thread/start` 统一使用 `~/Documents/Codex/CodeLink` cwd，不再由 CodeLink 为每个会话生成时间戳项目目录；Codex 远程界面的刷新时机和历史项目呈现不在公开 App Server 的控制范围内；
+- 每个新会话有独立 thread ID，但 `thread/start` 统一使用当前用户主目录下由系统路径 API 生成的 `Documents/Codex/CodeLink` cwd，不再由 CodeLink 为每个会话生成时间戳项目目录；Codex 远程界面的刷新时机和历史项目呈现不在公开 App Server 的控制范围内；
 - 绑定已有桌面 thread 时不覆盖原任务的 cwd，升级也不改写或删除旧版本已创建的历史 thread。
 
 ### 桌面任务绑定与通知

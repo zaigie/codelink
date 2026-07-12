@@ -48,6 +48,48 @@ describe("小白安装契约", () => {
     }
   });
 
+  it("面向用户的目录说明不把 POSIX home 简写当作跨平台路径", () => {
+    const repoRoot = path.resolve(testDir, "..", "..", "..");
+    const userFacingFiles = [
+      "README.md",
+      "INSTALL.md",
+      "docs/CAPABILITY_BOUNDARY.md",
+      "docs/architecture.md",
+      "plugins/codelink/.codex-plugin/plugin.json",
+      "plugins/codelink/.mcp.json",
+      "plugins/codelink/skills/wechat-codelink/SKILL.md",
+    ];
+
+    for (const name of userFacingFiles) {
+      const content = fs.readFileSync(path.join(repoRoot, name), "utf8");
+      expect(content, name).not.toContain("~/.codelink");
+      expect(content, name).not.toContain("~/Documents/Codex/CodeLink");
+      expect(content, name).not.toMatch(/\/Users\/|[A-Za-z]:\\Users\\/);
+    }
+
+    const skill = fs.readFileSync(
+      path.join(
+        repoRoot,
+        "plugins",
+        "codelink",
+        "skills",
+        "wechat-codelink",
+        "SKILL.md",
+      ),
+      "utf8",
+    );
+    expect(skill).toContain("CODELINK_STATE_DIR");
+    expect(skill).toContain("POSIX");
+    expect(skill).toContain("PowerShell");
+
+    const migration = fs.readFileSync(
+      path.join(repoRoot, "docs", "OPENCLAW_MIGRATION.md"),
+      "utf8",
+    );
+    expect(migration).not.toContain("~/.openclaw");
+    expect(migration).toContain("Windows PowerShell");
+  });
+
   it("CI 明确检查 macOS/Linux 的 x64 与 arm64 依赖解析", () => {
     const repoRoot = path.resolve(testDir, "..", "..", "..");
     const workflow = fs.readFileSync(
@@ -116,4 +158,3 @@ describe("安装脚本语法", () => {
     }
   }, 20_000);
 });
-
