@@ -117,7 +117,9 @@ describe("跨平台安装计划", () => {
       runtime: { valid: true },
       codexCapabilities: { plugin: false, appServer: false },
     });
-    expect(summary.diagnostics.map(({ code }) => code)).toContain(
+    expect(
+      summary.diagnostics.map(({ code }) => code),
+    ).toContain(
       "E_CODEX_PLUGIN_UNSUPPORTED",
     );
     expect(summary.nodeVersion).toMatch(/^v\d+/);
@@ -244,7 +246,8 @@ describe("安装失败摘要", () => {
 describe("小白安装契约", () => {
   it("要求先启用微信 ClawBot，并在主会话直接展示二维码图片", () => {
     const repoRoot = path.resolve(testDir, "..", "..", "..");
-    const read = (name) => fs.readFileSync(path.join(repoRoot, name), "utf8");
+    const read = (name) =>
+      fs.readFileSync(path.join(repoRoot, name), "utf8");
     const readme = read("README.md");
     const install = read("INSTALL.md");
     const prompt = read("INSTALL_PROMPT.md");
