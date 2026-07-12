@@ -51,11 +51,11 @@ Codex 当前会在 MCP `tools/call` 的 `_meta.threadId` 中提供调用方 thre
 
 ## 并发与最近绑定优先
 
-daemon 在回复“已收到”之前记录消息到达时的绑定，保证这条微信消息不会因回执期间出现的新通知而误投到别的 thread。任务完成后只在绑定仍与启动快照一致时更新当前会话；若较新的桌面通知已经切换绑定，旧任务仍返回结果，但不会抢回绑定。
+daemon 在接受任务时记录消息到达时的绑定，保证这条微信消息不会因执行期间出现的新通知而误投到别的 thread。任务完成后只在绑定仍与启动快照一致时更新当前会话；若较新的桌面通知已经切换绑定，旧任务仍返回结果，但不会抢回绑定。
 
 通知发送失败时同样按绑定版本做条件恢复，因此较早失败的通知不会回滚掉较晚成功的同 thread 通知。这些保证针对单个常驻 daemon 进程；同一状态目录不支持多个 daemon 同时写入。
 
-长任务不会阻塞微信长轮询。daemon 先把完整恢复请求以私有 `accepted` 记录写入，再提交 `get_updates_buf`，随后在后台执行；确认消息投递失败不会阻止 Codex。首个新 thread 尚未返回 ID 时，同一用户的后续消息只等待“路由建立”而不等待整个任务，拿到 ID 后即可通过 `turn/steer` 进入活动 turn。同一批更新里的连续消息也遵循这条规则。
+长任务不会阻塞微信长轮询。daemon 先把完整恢复请求以私有 `accepted` 记录写入，再提交 `get_updates_buf`，随后在后台执行；临时输入状态失败不会阻止 Codex。首个新 thread 尚未返回 ID 时，同一用户的后续消息只等待“路由建立”而不等待整个任务，拿到 ID 后即可通过 `turn/steer` 进入活动 turn。同一批更新里的连续消息也遵循这条规则。
 
 会话状态另有单调 generation。即使当前没有 thread，显式 `/new` 也会推进 generation，因此更早的异步 `thread/start` 不能在稍后抢回绑定。
 
@@ -65,7 +65,13 @@ daemon 在回复“已收到”之前记录消息到达时的绑定，保证这�
 
 所有文本发送统一经过 `WeixinTextDelivery`：按 UTF-8 2048 字节限制切块，优先段落、换行和完整 Markdown fence/list item；整条消息全局串行；chunk 间节流；`ret=-2` 只做有限退避。每个 chunk 使用稳定 `client_id`，同一次重试以及 daemon 在 pending outbox 上的重启恢复都会复用相同 ID。
 
-任务执行状态与微信投递状态分别记录。Codex 成功但微信失败时，任务仍为 `completed`，投递记录单独为 `failed`。最终消息在执行提交前先以完整 payload 写入私有 outbox；投递成功后移除 payload。`/tasks` 只返回预览和投递摘要，不暴露恢复正文、outbox 文本或稳定键。
+任务执行状态与微信投递状态分别记录。Codex 成功但微信失败时，任务仍为 `completed`，投递记录单独为 `failed`。最终消息在执行提交前先以完整 payload 写入私有 outbox；投递成功后移除 payload。新版本不再创建或发送永久 acknowledgement；升级时发现旧版 pending acknowledgement 会直接标为 `skipped`，避免重启后冒出过期回执。`/tasks` 只返回预览和投递摘要，不暴露恢复正文、outbox 文本或稳定键。
+
+## 微信输入状态
+
+`WeixinClient` 封装腾讯公开的 `getconfig → typing_ticket → sendtyping` 线协议，并只在内存中按用户缓存 ticket，最长 24 小时。`WeixinTypingIndicator` 对 daemon 暴露一个 `during()` 接口，内部完成立即开始、每 5 秒保活、串行更新和最终取消。typing 请求使用可取消信号，避免慢速 ticket 请求在正文已经发送后产生迟到的“正在输入”。
+
+同一账号和微信用户的并发任务使用引用计数共享状态；一个任务结束不会取消仍在工作的另一个任务。保活在上一次请求结束后再计时，避免慢网络积压；连续失败两次后转为每 60 秒静默探测，新工作到来会提前重试，成功后恢复 5 秒节奏，避免无效请求和日志放大。所有 typing 错误只写安全日志，不改变 Codex 任务或正文投递结果。CANCEL 共享幂等关闭流程并有 3 秒总时限，daemon 不会因状态接口失联而卡住退出。桌面任务通过 `@CodeLink` 主动发送的通知不启动 typing，因为它不是正在处理的微信入站请求。
 
 ## App Server 可靠性
 

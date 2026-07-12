@@ -10,6 +10,7 @@ import {
 
 const REGULAR_TIMEOUT_MS = 15_000;
 const LONG_POLL_TIMEOUT_MS = 40_000;
+const TYPING_TICKET_TTL_MS = 24 * 60 * 60 * 1_000;
 
 export class WeixinApiError extends Error {
   constructor(
@@ -31,6 +32,11 @@ export class WeixinApiError extends Error {
 }
 
 export class WeixinClient {
+  private readonly typingTickets = new Map<
+    string,
+    { ticket: string; expiresAt: number }
+  >();
+
   constructor(
     private readonly config: CodelinkConfig["weixin"],
     private readonly fetchImpl: typeof fetch = fetch,
@@ -158,6 +164,119 @@ export class WeixinClient {
     }
   }
 
+  async setTyping(params: {
+    session: WeixinSession;
+    toUserId: string;
+    contextToken?: string;
+    typing: boolean;
+    signal?: AbortSignal;
+  }): Promise<void> {
+    params.signal?.throwIfAborted();
+    const typingTicket = await this.getTypingTicket(params);
+    params.signal?.throwIfAborted();
+    try {
+      const typingResponse = await this.request<{
+        ret?: number;
+        errcode?: number;
+        errmsg?: string;
+      }>(params.session.baseUrl, "ilink/bot/sendtyping", {
+        method: "POST",
+        token: params.session.token,
+        body: JSON.stringify({
+          ilink_user_id: params.toUserId,
+          typing_ticket: typingTicket,
+          status: params.typing ? 1 : 2,
+          base_info: this.baseInfo(),
+        }),
+        signal: params.signal,
+        allowEmptyResponse: true,
+      });
+      this.throwForIlinkError("sendtyping", typingResponse);
+    } catch (error) {
+      this.typingTickets.delete(this.typingTicketCacheKey(params));
+      throw error;
+    }
+  }
+
+  private async getTypingTicket(params: {
+    session: WeixinSession;
+    toUserId: string;
+    contextToken?: string;
+    signal?: AbortSignal;
+  }): Promise<string> {
+    const cacheKey = this.typingTicketCacheKey(params);
+    const cached = this.typingTickets.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) return cached.ticket;
+
+    const configResponse = await this.request<{
+      ret?: number;
+      errcode?: number;
+      errmsg?: string;
+      typing_ticket?: string;
+    }>(params.session.baseUrl, "ilink/bot/getconfig", {
+      method: "POST",
+      token: params.session.token,
+      body: JSON.stringify({
+        ilink_user_id: params.toUserId,
+        ...(params.contextToken
+          ? { context_token: params.contextToken }
+          : {}),
+        base_info: this.baseInfo(),
+      }),
+      signal: params.signal,
+    });
+    this.throwForIlinkError("getconfig", configResponse);
+    const typingTicket = configResponse.typing_ticket?.trim();
+    if (!typingTicket) {
+      throw new WeixinApiError(
+        "getconfig did not return typing_ticket",
+        undefined,
+        JSON.stringify(configResponse),
+        configResponse.ret,
+        configResponse.errcode,
+      );
+    }
+    this.typingTickets.set(cacheKey, {
+      ticket: typingTicket,
+      expiresAt: Date.now() + TYPING_TICKET_TTL_MS,
+    });
+    return typingTicket;
+  }
+
+  private typingTicketCacheKey(params: {
+    session: WeixinSession;
+    toUserId: string;
+  }): string {
+    return JSON.stringify([
+      params.session.baseUrl,
+      params.session.accountId,
+      params.toUserId,
+    ]);
+  }
+
+  private throwForIlinkError(
+    operation: string,
+    response: { ret?: number; errcode?: number; errmsg?: string },
+  ): void {
+    const failedRet = typeof response.ret === "number" && response.ret !== 0;
+    const failedErrcode =
+      typeof response.errcode === "number" && response.errcode !== 0;
+    if (!failedRet && !failedErrcode) return;
+    const codes = [
+      failedRet ? `ret=${response.ret}` : "",
+      failedErrcode ? `errcode=${response.errcode}` : "",
+    ]
+      .filter(Boolean)
+      .join(" ");
+    throw new WeixinApiError(
+      `${operation} ${codes}: ${response.errmsg ?? "unknown error"}`,
+      undefined,
+      JSON.stringify(response),
+      response.ret,
+      response.errcode,
+    );
+  }
+
   private baseInfo(): { channel_version: string; bot_agent: string } {
     return {
       channel_version: this.config.channelVersion,
@@ -191,6 +310,8 @@ export class WeixinClient {
       token?: string;
       body?: string;
       timeoutMs?: number;
+      signal?: AbortSignal;
+      allowEmptyResponse?: boolean;
     },
   ): Promise<T> {
     const controller = new AbortController();
@@ -207,7 +328,9 @@ export class WeixinClient {
         method: options.method,
         headers: this.headers(options.token),
         body: options.body,
-        signal: controller.signal,
+        signal: options.signal
+          ? AbortSignal.any([controller.signal, options.signal])
+          : controller.signal,
       });
       const text = await response.text();
       if (!response.ok) {
@@ -217,6 +340,7 @@ export class WeixinClient {
           text,
         );
       }
+      if (options.allowEmptyResponse && text.trim() === "") return {} as T;
       try {
         return JSON.parse(text) as T;
       } catch (error) {

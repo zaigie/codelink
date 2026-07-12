@@ -17,6 +17,17 @@ CodeLink 当前的核心能力是：为每个授权微信用户维护一个“�
 - 若原任务仍在运行，CodeLink 使用官方 `turn/steer` 把微信回复加入当前 turn；否则使用 `turn/start` 开始下一轮；
 - 绑定保存在 `conversations.json`，每个微信用户相互独立。
 
+### 回复状态与正文
+
+- Codex 处理微信请求期间，CodeLink 通过腾讯公开 iLink `getconfig` / `sendtyping` 协议显示微信原生“正在输入”状态；
+- 状态立即开始、每 5 秒保活，在成功、失败或 daemon 停止时尽力取消；状态接口失败不会阻止 Codex 执行或最终正文；
+- 同一用户有多个并发任务时共享一份输入状态，最后一个任务结束后才取消；
+- 普通回复只包含 Codex 正文，不附加消息 ID、thread ID、“当前会话已回复”或“新会话已回复”；
+- 首次没有绑定时自动创建会话，但不显示多余的新会话提示；只有 `/new <请求>` 或明确自然语言切换才提示旧上下文不会带入；
+- `/status` 等用户主动诊断命令仍可显示当前 thread。
+
+typing 线协议依据腾讯公开、MIT 授权且随包发布源码的 [`@tencent-weixin/openclaw-weixin`](https://www.npmjs.com/package/@tencent-weixin/openclaw-weixin)。CodeLink 自己实现该公开协议，不安装或运行 OpenClaw。
+
 ### 新会话
 
 - `/new` 清除当前绑定，下一条消息从新上下文开始；
@@ -67,6 +78,7 @@ CodeLink 新建的微信会话会保存到本机 Codex 存储并返回 thread ID
 6. 后续桌面任务通知可以覆盖当前绑定；
 7. 较早任务在新绑定之后完成时，不会把当前会话切回去；
 8. daemon 重启后仍能从保存的 thread ID 继续；
-9. MCP 和日志不暴露 bot token 或 context token。
+9. 长任务显示临时“正在输入”，普通最终回复不暴露内部 ID 或运行标签；
+10. MCP 和日志不暴露 bot token、context token 或 typing ticket。
 
 微信新建会话是否出现在 Codex App 侧栏不作为验收项。

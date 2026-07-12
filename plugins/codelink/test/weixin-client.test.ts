@@ -100,6 +100,211 @@ describe("WeixinClient", () => {
     expect(body.base_info.bot_agent).toBe("CodeLink/0.1.0");
   });
 
+  it("starts the official iLink typing state with a per-user typing ticket", async () => {
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ ret: 0, typing_ticket: "typing-ticket" }),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ ret: 0 }), { status: 200 }),
+      );
+    const client = new WeixinClient(defaultConfig().weixin, fetchMock);
+    const session = {
+      accountId: "bot",
+      token: "token",
+      userId: "owner",
+      baseUrl: "https://ilinkai.weixin.qq.com",
+      savedAt: "now",
+    };
+
+    await client.setTyping({
+      session,
+      toUserId: "owner",
+      contextToken: "ctx",
+      typing: true,
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const [configUrl, configInit] = fetchMock.mock.calls[0];
+    expect(String(configUrl)).toContain("/ilink/bot/getconfig");
+    expect(JSON.parse(String(configInit?.body))).toMatchObject({
+      ilink_user_id: "owner",
+      context_token: "ctx",
+    });
+    const [typingUrl, typingInit] = fetchMock.mock.calls[1];
+    expect(String(typingUrl)).toContain("/ilink/bot/sendtyping");
+    expect(JSON.parse(String(typingInit?.body))).toMatchObject({
+      ilink_user_id: "owner",
+      typing_ticket: "typing-ticket",
+      status: 1,
+    });
+  });
+
+  it("accepts an empty successful sendtyping response", async () => {
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ ret: 0, typing_ticket: "typing-ticket" }),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(new Response("", { status: 200 }));
+    const client = new WeixinClient(defaultConfig().weixin, fetchMock);
+
+    await expect(
+      client.setTyping({
+        session: {
+          accountId: "bot",
+          token: "token",
+          userId: "owner",
+          baseUrl: "https://ilinkai.weixin.qq.com",
+          savedAt: "now",
+        },
+        toUserId: "owner",
+        contextToken: "ctx",
+        typing: true,
+      }),
+    ).resolves.toBeUndefined();
+  });
+
+  it("reuses the typing ticket when cancelling the same user's typing state", async () => {
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ ret: 0, typing_ticket: "typing-ticket" }),
+          { status: 200 },
+        ),
+      )
+      .mockImplementation(async () =>
+        new Response(JSON.stringify({ ret: 0 }), { status: 200 }),
+      );
+    const client = new WeixinClient(defaultConfig().weixin, fetchMock);
+    const params = {
+      session: {
+        accountId: "bot",
+        token: "token",
+        userId: "owner",
+        baseUrl: "https://ilinkai.weixin.qq.com",
+        savedAt: "now",
+      },
+      toUserId: "owner",
+      contextToken: "ctx",
+    };
+
+    await client.setTyping({ ...params, typing: true });
+    await client.setTyping({ ...params, typing: false });
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    const [typingUrl, typingInit] = fetchMock.mock.calls[2];
+    expect(String(typingUrl)).toContain("/ilink/bot/sendtyping");
+    expect(JSON.parse(String(typingInit?.body))).toMatchObject({
+      typing_ticket: "typing-ticket",
+      status: 2,
+    });
+  });
+
+  it("refreshes a rejected typing ticket on the next status update", async () => {
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ ret: 0, typing_ticket: "stale-ticket" }),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ ret: -1, errmsg: "ticket expired" }),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ ret: 0, typing_ticket: "fresh-ticket" }),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ ret: 0 }), { status: 200 }),
+      );
+    const client = new WeixinClient(defaultConfig().weixin, fetchMock);
+    const params = {
+      session: {
+        accountId: "bot",
+        token: "token",
+        userId: "owner",
+        baseUrl: "https://ilinkai.weixin.qq.com",
+        savedAt: "now",
+      },
+      toUserId: "owner",
+      contextToken: "ctx",
+      typing: true,
+    };
+
+    await expect(client.setTyping(params)).rejects.toThrow("ticket expired");
+    await expect(client.setTyping(params)).resolves.toBeUndefined();
+
+    expect(
+      fetchMock.mock.calls.map(([url]) => new URL(String(url)).pathname),
+    ).toEqual([
+      "/ilink/bot/getconfig",
+      "/ilink/bot/sendtyping",
+      "/ilink/bot/getconfig",
+      "/ilink/bot/sendtyping",
+    ]);
+    expect(
+      JSON.parse(String(fetchMock.mock.calls[3][1]?.body)).typing_ticket,
+    ).toBe("fresh-ticket");
+  });
+
+  it("does not send a late typing start after its ticket request is cancelled", async () => {
+    let resolveConfig!: (response: Response) => void;
+    const configPending = new Promise<Response>((resolve) => {
+      resolveConfig = resolve;
+    });
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockImplementationOnce(async () => configPending)
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ ret: 0 }), { status: 200 }),
+      );
+    const client = new WeixinClient(defaultConfig().weixin, fetchMock);
+    const controller = new AbortController();
+
+    const starting = client.setTyping({
+      session: {
+        accountId: "bot",
+        token: "token",
+        userId: "owner",
+        baseUrl: "https://ilinkai.weixin.qq.com",
+        savedAt: "now",
+      },
+      toUserId: "owner",
+      contextToken: "ctx",
+      typing: true,
+      signal: controller.signal,
+    } as Parameters<WeixinClient["setTyping"]>[0] & {
+      signal: AbortSignal;
+    });
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    controller.abort();
+    resolveConfig(
+      new Response(
+        JSON.stringify({ ret: 0, typing_ticket: "late-ticket" }),
+        { status: 200 },
+      ),
+    );
+
+    await expect(starting).rejects.toThrow();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("preserves sendmessage ret and errcode on the thrown error", async () => {
     const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(

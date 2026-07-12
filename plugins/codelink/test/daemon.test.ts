@@ -19,7 +19,7 @@ afterEach(() => {
 });
 
 describe("CodelinkDaemon", () => {
-  it("accepts an authorized text message, stores context, creates a task, and replies", async () => {
+  it("accepts an authorized text message and replies with only the Codex answer", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "codelink-daemon-"));
     cleanup.push(dir);
     const store = new StateStore(dir);
@@ -36,7 +36,10 @@ describe("CodelinkDaemon", () => {
     const sendText = vi.fn<(input: { text: string }) => Promise<void>>(
       async () => undefined,
     );
-    const fakeClient = { sendText } as unknown as WeixinClient;
+    const setTyping = vi.fn<WeixinClient["setTyping"]>(
+      async () => undefined,
+    );
+    const fakeClient = { sendText, setTyping } as unknown as WeixinClient;
     const runTask = vi.fn(async () => ({
       threadId: "thread-1",
       finalResponse: "all done",
@@ -66,12 +69,15 @@ describe("CodelinkDaemon", () => {
         conversationAtReceipt: null,
       }),
     );
-    expect(sendText).toHaveBeenCalledTimes(2);
-    expect(sendText.mock.calls[1][0].text).toContain("thread-1");
-    expect(sendText.mock.calls[1][0].text).toContain("all done");
+    expect(sendText).toHaveBeenCalledTimes(1);
+    expect(sendText.mock.calls[0][0].text).toBe("all done");
+    expect(setTyping.mock.calls.map(([input]) => input.typing)).toEqual([
+      true,
+      false,
+    ]);
   });
 
-  it("starts the Codex task even when the acknowledgement cannot be delivered", async () => {
+  it("uses temporary typing without sending a permanent acknowledgement", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "codelink-daemon-"));
     cleanup.push(dir);
     const store = new StateStore(dir);
@@ -85,24 +91,33 @@ describe("CodelinkDaemon", () => {
     store.saveSession(session);
     const config = defaultConfig();
     config.security.allowedUserIds = ["owner"];
-    const sendText = vi
-      .fn<(input: { text: string }) => Promise<void>>()
-      .mockRejectedValueOnce(new Error("ack transport failed"))
-      .mockResolvedValue(undefined);
-    const runTask = vi.fn(async () => ({
-      threadId: "thread-after-ack-failure",
-      finalResponse: "task still ran",
-      createdNewConversation: true,
-      conversationIsCurrent: true,
-    }));
+    const sendText = vi.fn<(input: { text: string }) => Promise<void>>(
+      async () => undefined,
+    );
+    const setTyping = vi.fn<WeixinClient["setTyping"]>(
+      async () => undefined,
+    );
+    let finishTask!: () => void;
+    const taskPending = new Promise<void>((resolve) => {
+      finishTask = resolve;
+    });
+    const runTask = vi.fn(async () => {
+      await taskPending;
+      return {
+        threadId: "thread-with-typing",
+        finalResponse: "task completed",
+        createdNewConversation: true,
+        conversationIsCurrent: true,
+      };
+    });
     const daemon = new CodelinkDaemon(
       config,
       store,
-      { sendText } as unknown as WeixinClient,
+      { sendText, setTyping } as unknown as WeixinClient,
       { runTask },
     );
 
-    await daemon.handleIncomingMessage(session, {
+    const handling = daemon.handleIncomingMessage(session, {
       message_id: 991,
       from_user_id: "owner",
       message_type: 1,
@@ -110,11 +125,19 @@ describe("CodelinkDaemon", () => {
       item_list: [{ type: 1, text_item: { text: "do it anyway" } }],
     });
 
+    await vi.waitFor(() => expect(runTask).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(setTyping).toHaveBeenCalledTimes(1));
+    expect(sendText).not.toHaveBeenCalled();
+
+    finishTask();
+    await handling;
     expect(runTask).toHaveBeenCalledTimes(1);
-    expect(sendText).toHaveBeenCalledTimes(2);
-    expect(store.findTask("991")?.delivery?.acknowledgement).toMatchObject({
-      status: "failed",
-    });
+    expect(sendText).toHaveBeenCalledTimes(1);
+    expect(sendText.mock.calls[0][0].text).toBe("task completed");
+    expect(setTyping.mock.calls.map(([input]) => input.typing)).toEqual([
+      true,
+      false,
+    ]);
   });
 
   it("keeps a successful execution successful when final WeChat delivery fails", async () => {
@@ -133,7 +156,6 @@ describe("CodelinkDaemon", () => {
     config.security.allowedUserIds = ["owner"];
     const sendText = vi
       .fn<(input: { text: string }) => Promise<void>>()
-      .mockResolvedValueOnce(undefined)
       .mockRejectedValueOnce(new Error("final transport failed"));
     const runTask = vi.fn(async ({ messageId }: { messageId: string }) => {
       store.updateTask(messageId, (current) => ({
@@ -282,10 +304,16 @@ describe("CodelinkDaemon", () => {
         createdNewConversation: false,
         conversationIsCurrent: true,
       });
+    const setTyping = vi.fn<WeixinClient["setTyping"]>(
+      async () => undefined,
+    );
     const daemon = new CodelinkDaemon(
       config,
       store,
-      { sendText: vi.fn(async () => undefined) } as unknown as WeixinClient,
+      {
+        sendText: vi.fn(async () => undefined),
+        setTyping,
+      } as unknown as WeixinClient,
       { runTask },
     );
 
@@ -307,9 +335,16 @@ describe("CodelinkDaemon", () => {
 
     await vi.waitFor(() => expect(runTask).toHaveBeenCalledTimes(2));
     await second;
+    expect(setTyping.mock.calls.map(([input]) => input.typing)).toEqual([
+      true,
+    ]);
     await expect(daemon.drainBackgroundTasks(5)).resolves.toBe(false);
     finishFirst();
     await first;
+    expect(setTyping.mock.calls.map(([input]) => input.typing)).toEqual([
+      true,
+      false,
+    ]);
     await expect(daemon.drainBackgroundTasks(5)).resolves.toBe(true);
   });
 
@@ -435,6 +470,12 @@ describe("CodelinkDaemon", () => {
       startedAt: "2026-07-12T00:02:00.000Z",
       completedAt: "2026-07-12T00:03:00.000Z",
       delivery: {
+        acknowledgement: {
+          status: "pending",
+          updatedAt: "2026-07-12T00:02:30.000Z",
+          text: "legacy acknowledgement must not be sent",
+          deliveryKey: "task:recover-outbox:acknowledgement",
+        },
         result: {
           status: "pending",
           updatedAt: "2026-07-12T00:03:00.000Z",
@@ -484,6 +525,14 @@ describe("CodelinkDaemon", () => {
     expect(store.findTask("recover-outbox")?.delivery?.result?.status).toBe(
       "sent",
     );
+    expect(
+      store.findTask("recover-outbox")?.delivery?.acknowledgement?.status,
+    ).toBe("skipped");
+    expect(
+      sendText.mock.calls.some(
+        ([input]) => input.text === "legacy acknowledgement must not be sent",
+      ),
+    ).toBe(false);
     expect(sendText.mock.calls.some(([input]) => input.text === "persisted final result"))
       .toBe(true);
   });
@@ -638,8 +687,9 @@ describe("CodelinkDaemon", () => {
     expect(store.getConversation("owner")).toBeNull();
     expect(runTask).not.toHaveBeenCalled();
     expect(sendText).toHaveBeenCalledTimes(1);
-    expect(sendText.mock.calls[0][0].text).toContain("新会话");
-    expect(sendText.mock.calls[0][0].text).toContain("下一条消息");
+    expect(sendText.mock.calls[0][0].text).toBe(
+      "新会话已开启，上一个会话的上下文不会带入。直接发送下一条消息即可开始。",
+    );
   });
 
   it("starts a fresh thread when natural language includes a new-conversation prompt", async () => {
@@ -696,11 +746,13 @@ describe("CodelinkDaemon", () => {
         startNew: true,
       }),
     );
-    expect(sendText.mock.calls[0][0].text).toContain("创建新 Codex 会话");
-    expect(sendText.mock.calls[1][0].text).toContain("新会话已回复");
+    expect(sendText).toHaveBeenCalledTimes(1);
+    expect(sendText.mock.calls[0][0].text).toBe(
+      "新会话已开启，上一个会话的上下文不会带入。\n\nfresh answer",
+    );
   });
 
-  it("routes a message using the binding captured before the acknowledgement", async () => {
+  it("routes using the receipt-time binding without exposing a later switch", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "codelink-daemon-"));
     cleanup.push(dir);
     const store = new StateStore(dir);
@@ -716,18 +768,17 @@ describe("CodelinkDaemon", () => {
     const config = defaultConfig();
     config.security.allowedUserIds = ["owner"];
     const sendText = vi.fn<(input: { text: string }) => Promise<void>>(
-      async () => {
-        if (sendText.mock.calls.length === 1) {
-          store.bindConversation("owner", { threadId: "newer-desktop-thread" });
-        }
-      },
+      async () => undefined,
     );
-    const runTask = vi.fn(async () => ({
-      threadId: "thread-at-receipt",
-      finalResponse: "reply from the received thread",
-      createdNewConversation: false,
-      conversationIsCurrent: false,
-    }));
+    const runTask = vi.fn(async () => {
+      store.bindConversation("owner", { threadId: "newer-desktop-thread" });
+      return {
+        threadId: "thread-at-receipt",
+        finalResponse: "reply from the received thread",
+        createdNewConversation: false,
+        conversationIsCurrent: false,
+      };
+    });
     const daemon = new CodelinkDaemon(
       config,
       store,
@@ -753,7 +804,10 @@ describe("CodelinkDaemon", () => {
         }),
       }),
     );
-    expect(sendText.mock.calls[1][0].text).toContain("微信当前会话已切换");
+    expect(sendText).toHaveBeenCalledTimes(1);
+    expect(sendText.mock.calls[0][0].text).toBe(
+      "reply from the received thread",
+    );
     expect(store.getConversation("owner")?.threadId).toBe(
       "newer-desktop-thread",
     );
