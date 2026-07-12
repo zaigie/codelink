@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -8,7 +9,7 @@ import {
   platformSupport,
   serviceInstaller,
 } from "../scripts/setup-lib.mjs";
-import { renderLaunchAgent } from "../scripts/render-launch-agent.mjs";
+import { renderLaunchAgent } from "../scripts/render-launch-agent-lib.mjs";
 
 const testDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -55,6 +56,42 @@ describe("跨平台安装计划", () => {
     expect(rendered).toBe(
       "<string>/Users/A&amp;B/&lt;node&gt;</string><string>/Users/&quot;owner&quot;/.codelink</string>",
     );
+  });
+
+  it("通过 Node 启动 LaunchAgent 包装器并写入渲染结果", () => {
+    const root = fs.mkdtempSync(path.join(testDir, "launch-agent-"));
+    try {
+      const templatePath = path.join(root, "template.plist");
+      const outputPath = path.join(root, "output.plist");
+      fs.writeFileSync(
+        templatePath,
+        "<string>__LABEL__</string><string>__STATE_DIR__</string>",
+      );
+      const result = spawnSync(
+        process.execPath,
+        [
+          path.resolve(testDir, "..", "scripts", "render-launch-agent.mjs"),
+          templatePath,
+          outputPath,
+          "com.zaigie.codelink",
+          process.execPath,
+          "/codex",
+          "/runtime/cli.cjs",
+          "/workdir",
+          "/logs",
+          "/state&A",
+        ],
+        { encoding: "utf8" },
+      );
+
+      expect(result.stderr).toBe("");
+      expect(result.status).toBe(0);
+      expect(fs.readFileSync(outputPath, "utf8")).toBe(
+        "<string>com.zaigie.codelink</string><string>/state&amp;A</string>",
+      );
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("解析无副作用安装参数", () => {

@@ -3,23 +3,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-
-export function renderLaunchAgent(template, values) {
-  let rendered = template;
-  for (const [placeholder, value] of Object.entries(values)) {
-    rendered = rendered.replaceAll(`__${placeholder}__`, escapeXml(value));
-  }
-  return rendered;
-}
-
-function escapeXml(value) {
-  return String(value)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&apos;");
-}
+import { renderLaunchAgent } from "./render-launch-agent-lib.mjs";
 
 function main(args) {
   const [
