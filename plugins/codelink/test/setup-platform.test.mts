@@ -20,9 +20,13 @@ import {
 } from "../scripts/setup-lib.mjs";
 import { renderLaunchAgent } from "../scripts/render-launch-agent.mjs";
 
-const hasSh = spawnSync("sh", ["-c", "exit 0"], {
-  stdio: "ignore",
-}).status === 0;
+function hasSh() {
+  return (
+    spawnSync("sh", ["-c", "exit 0"], {
+      stdio: "ignore",
+    }).status === 0
+  );
+}
 
 describe("跨平台安装计划", () => {
   it.each([
@@ -383,7 +387,7 @@ describe("安装脚本语法", () => {
     "uninstall-systemd-user.sh",
     "start-mcp.sh",
   ])("%s 在 sh 可用时通过 sh -n", (script) => {
-    if (!hasSh) return;
+    if (!hasSh()) return;
     const scriptPath = path.resolve("scripts", script);
     const result = spawnSync("sh", ["-n", scriptPath], {
       cwd: path.resolve(import.meta.dirname, ".."),
