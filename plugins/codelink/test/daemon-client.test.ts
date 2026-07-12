@@ -3,6 +3,30 @@ import { describe, expect, it, vi } from "vitest";
 import { DaemonClient } from "../src/daemon-client.js";
 
 describe("DaemonClient", () => {
+  it("returns degraded health details even when the daemon responds 503", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          ok: false,
+          degraded: true,
+          sessionExpired: true,
+          lastPollError: "微信登录已失效",
+        }),
+        { status: 503 },
+      ),
+    );
+    const client = new DaemonClient({
+      baseUrl: "http://127.0.0.1:18791",
+      fetchImpl: fetchMock,
+    });
+
+    await expect(client.status()).resolves.toMatchObject({
+      ok: false,
+      degraded: true,
+      sessionExpired: true,
+    });
+  });
+
   it("sends an explicit notification payload to the local daemon", async () => {
     const fetchMock = vi
       .fn<typeof fetch>()

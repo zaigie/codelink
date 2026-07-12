@@ -21,17 +21,42 @@ export type ConversationBinding = {
   updatedAt: string;
 };
 
+export type ConversationSnapshot = {
+  binding: ConversationBinding | null;
+  generation: number;
+};
+
 export type TaskRecord = {
   messageId: string;
   fromUserId: string;
   threadId?: string;
   workspace?: string;
+  prompt?: string;
   promptPreview: string;
-  status: "running" | "completed" | "failed";
+  startNew?: boolean;
+  conversationAtReceipt?: ConversationBinding | null;
+  conversationGenerationAtReceipt?: number;
+  status: "accepted" | "running" | "completed" | "failed";
   startedAt: string;
   completedAt?: string;
   finalResponsePreview?: string;
   error?: string;
+  delivery?: {
+    acknowledgement?: TaskDeliveryRecord;
+    result?: TaskDeliveryRecord;
+  };
+};
+
+export type TaskDeliveryRecord = {
+  status: "pending" | "sent" | "failed" | "skipped";
+  updatedAt: string;
+  totalChunks?: number;
+  sentChunks?: number;
+  failedChunkIndex?: number;
+  errorCode?: number;
+  error?: string;
+  text?: string;
+  deliveryKey?: string;
 };
 
 type TaskState = {
@@ -40,6 +65,7 @@ type TaskState = {
 
 type ConversationState = {
   conversations: Record<string, ConversationBinding>;
+  generations: Record<string, number>;
 };
 
 export class StateStore {
@@ -127,6 +153,14 @@ export class StateStore {
     return this.loadConversationState().conversations[userId] ?? null;
   }
 
+  getConversationSnapshot(userId: string): ConversationSnapshot {
+    const state = this.loadConversationState();
+    return {
+      binding: state.conversations[userId] ?? null,
+      generation: state.generations[userId] ?? 0,
+    };
+  }
+
   bindConversation(
     userId: string,
     binding: Pick<ConversationBinding, "threadId">,
@@ -137,6 +171,7 @@ export class StateStore {
       threadId: binding.threadId,
       updatedAt: nextConversationUpdatedAt(current),
     };
+    state.generations[userId] = (state.generations[userId] ?? 0) + 1;
     this.writeJson("conversations.json", state, 0o600);
   }
 
@@ -144,17 +179,29 @@ export class StateStore {
     userId: string,
     expected: ConversationBinding | null,
     threadId: string,
+    expectedGeneration?: number,
   ): boolean {
-    return this.replaceConversationIfUnchanged(userId, expected, { threadId });
+    return this.replaceConversationIfUnchanged(
+      userId,
+      expected,
+      { threadId },
+      expectedGeneration,
+    );
   }
 
   replaceConversationIfUnchanged(
     userId: string,
     expected: ConversationBinding | null,
     replacement: Pick<ConversationBinding, "threadId"> | null,
+    expectedGeneration?: number,
   ): boolean {
     const state = this.loadConversationState();
     const current = state.conversations[userId] ?? null;
+    if (
+      expectedGeneration !== undefined &&
+      (state.generations[userId] ?? 0) !== expectedGeneration
+    )
+      return false;
     if (!sameConversationBinding(current, expected)) return false;
     if (replacement) {
       state.conversations[userId] = {
@@ -164,6 +211,7 @@ export class StateStore {
     } else {
       delete state.conversations[userId];
     }
+    state.generations[userId] = (state.generations[userId] ?? 0) + 1;
     this.writeJson("conversations.json", state, 0o600);
     return true;
   }
@@ -171,6 +219,7 @@ export class StateStore {
   clearConversation(userId: string): void {
     const state = this.loadConversationState();
     delete state.conversations[userId];
+    state.generations[userId] = (state.generations[userId] ?? 0) + 1;
     this.writeJson("conversations.json", state, 0o600);
   }
 
@@ -184,6 +233,31 @@ export class StateStore {
       this.loadTaskState().tasks.find((task) => task.messageId === messageId) ??
       null
     );
+  }
+
+  acceptTask(record: TaskRecord): boolean {
+    const state = this.loadTaskState();
+    if (state.tasks.some((task) => task.messageId === record.messageId))
+      return false;
+    state.tasks.push(record);
+    state.tasks = state.tasks.slice(-500);
+    this.writeJson("tasks.json", state, 0o600);
+    return true;
+  }
+
+  updateTask(
+    messageId: string,
+    update: (current: TaskRecord) => TaskRecord,
+  ): TaskRecord | null {
+    const state = this.loadTaskState();
+    const index = state.tasks.findIndex(
+      (task) => task.messageId === messageId,
+    );
+    if (index < 0) return null;
+    const next = update(state.tasks[index]);
+    state.tasks[index] = next;
+    this.writeJson("tasks.json", state, 0o600);
+    return next;
   }
 
   upsertTask(record: TaskRecord): void {
@@ -208,6 +282,10 @@ export class StateStore {
       conversations:
         data?.conversations && typeof data.conversations === "object"
           ? data.conversations
+          : {},
+      generations:
+        data?.generations && typeof data.generations === "object"
+          ? data.generations
           : {},
     };
   }

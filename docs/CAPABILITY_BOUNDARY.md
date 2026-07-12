@@ -2,13 +2,13 @@
 
 CodeLink 当前的核心能力是：为每个授权微信用户维护一个“当前 Codex 会话”，让微信和 Codex 桌面任务可以自然地接力。
 
-## 已支持并验证
+## 当前能力
 
 ### 微信直接登录
 
 - CodeLink 可以在空状态目录中直接请求腾讯 iLink 二维码并完成登录；
 - 不需要安装、运行或部署 OpenClaw，也不需要复制其 session；
-- 微信凭证只保存在 `~/.codelink`，权限为 `0600`。
+- 微信凭证只保存在当前用户的 `~/.codelink`；Unix 文件使用 `0600`，Windows 使用用户配置目录继承的 ACL。
 
 ### 当前会话
 
@@ -53,7 +53,8 @@ CodeLink 新建的微信会话会保存到本机 Codex 存储并返回 thread ID
 - 当前只处理文字消息；
 - 微信续接不等于 HITL 审批，不能批准 Codex 工具调用或权限请求；
 - 微信新建的会话使用生成工作目录；绑定的桌面任务保持原项目、上下文和设置；
-- 当前小白常驻安装只支持 macOS LaunchAgent；
+- 核心运行时面向官方 Codex 与 Node.js 22 覆盖的 macOS、Linux、Windows x64/arm64；macOS 已实机运行，Linux/Windows 安装器仍待对应系统首轮实机回归；
+- 自动常驻分别使用 macOS LaunchAgent、Linux systemd user service 和 Windows 当前用户 Scheduled Task；非 systemd Linux 需要用户已有的进程管理器；
 - 本地 daemon API 只应监听 loopback 地址。
 
 ## 验收标准

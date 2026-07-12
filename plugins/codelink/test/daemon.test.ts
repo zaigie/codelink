@@ -5,6 +5,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { defaultConfig } from "../src/config.js";
+import type { RunTaskInput } from "../src/codex-task-runner.js";
 import { CodelinkDaemon } from "../src/daemon.js";
 import { StateStore, type WeixinSession } from "../src/state.js";
 import type { WeixinClient } from "../src/weixin/client.js";
@@ -57,15 +58,512 @@ describe("CodelinkDaemon", () => {
     await daemon.handleIncomingMessage(session, message);
 
     expect(store.getContextToken("owner")?.contextToken).toBe("context-99");
-    expect(runTask).toHaveBeenCalledWith({
-      messageId: "99",
-      fromUserId: "owner",
-      prompt: "please do it",
-      conversationAtReceipt: null,
-    });
+    expect(runTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        messageId: "99",
+        fromUserId: "owner",
+        prompt: "please do it",
+        conversationAtReceipt: null,
+      }),
+    );
     expect(sendText).toHaveBeenCalledTimes(2);
     expect(sendText.mock.calls[1][0].text).toContain("thread-1");
     expect(sendText.mock.calls[1][0].text).toContain("all done");
+  });
+
+  it("starts the Codex task even when the acknowledgement cannot be delivered", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "codelink-daemon-"));
+    cleanup.push(dir);
+    const store = new StateStore(dir);
+    const session: WeixinSession = {
+      accountId: "bot",
+      token: "token",
+      userId: "owner",
+      baseUrl: "https://ilinkai.weixin.qq.com",
+      savedAt: "now",
+    };
+    store.saveSession(session);
+    const config = defaultConfig();
+    config.security.allowedUserIds = ["owner"];
+    const sendText = vi
+      .fn<(input: { text: string }) => Promise<void>>()
+      .mockRejectedValueOnce(new Error("ack transport failed"))
+      .mockResolvedValue(undefined);
+    const runTask = vi.fn(async () => ({
+      threadId: "thread-after-ack-failure",
+      finalResponse: "task still ran",
+      createdNewConversation: true,
+      conversationIsCurrent: true,
+    }));
+    const daemon = new CodelinkDaemon(
+      config,
+      store,
+      { sendText } as unknown as WeixinClient,
+      { runTask },
+    );
+
+    await daemon.handleIncomingMessage(session, {
+      message_id: 991,
+      from_user_id: "owner",
+      message_type: 1,
+      context_token: "context-991",
+      item_list: [{ type: 1, text_item: { text: "do it anyway" } }],
+    });
+
+    expect(runTask).toHaveBeenCalledTimes(1);
+    expect(sendText).toHaveBeenCalledTimes(2);
+    expect(store.findTask("991")?.delivery?.acknowledgement).toMatchObject({
+      status: "failed",
+    });
+  });
+
+  it("keeps a successful execution successful when final WeChat delivery fails", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "codelink-daemon-"));
+    cleanup.push(dir);
+    const store = new StateStore(dir);
+    const session: WeixinSession = {
+      accountId: "bot",
+      token: "token",
+      userId: "owner",
+      baseUrl: "https://ilinkai.weixin.qq.com",
+      savedAt: "now",
+    };
+    store.saveSession(session);
+    const config = defaultConfig();
+    config.security.allowedUserIds = ["owner"];
+    const sendText = vi
+      .fn<(input: { text: string }) => Promise<void>>()
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error("final transport failed"));
+    const runTask = vi.fn(async ({ messageId }: { messageId: string }) => {
+      store.updateTask(messageId, (current) => ({
+        ...current,
+        threadId: "thread-completed",
+        status: "completed",
+        completedAt: new Date().toISOString(),
+      }));
+      return {
+        threadId: "thread-completed",
+        finalResponse: "execution succeeded",
+        createdNewConversation: true,
+        conversationIsCurrent: true,
+      };
+    });
+    const daemon = new CodelinkDaemon(
+      config,
+      store,
+      { sendText } as unknown as WeixinClient,
+      { runTask } as never,
+    );
+
+    await daemon.handleIncomingMessage(session, {
+      message_id: 992,
+      from_user_id: "owner",
+      message_type: 1,
+      context_token: "context-992",
+      item_list: [{ type: 1, text_item: { text: "finish this" } }],
+    });
+
+    expect(store.findTask("992")).toMatchObject({
+      status: "completed",
+      delivery: { result: { status: "failed" } },
+    });
+    expect(store.findTask("992")?.error).toBeUndefined();
+  });
+
+  it("persists task acceptance before advancing the update cursor and keeps polling during a long task", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "codelink-daemon-"));
+    cleanup.push(dir);
+    const store = new StateStore(dir);
+    const session: WeixinSession = {
+      accountId: "bot",
+      token: "token",
+      userId: "owner",
+      baseUrl: "https://ilinkai.weixin.qq.com",
+      savedAt: "now",
+    };
+    store.saveSession(session);
+    const config = defaultConfig();
+    config.security.allowedUserIds = ["owner"];
+    let finishTask!: () => void;
+    const taskPending = new Promise<void>((resolve) => {
+      finishTask = resolve;
+    });
+    const runTask = vi.fn(async () => {
+      await taskPending;
+      return {
+        threadId: "thread-long",
+        finalResponse: "done",
+        createdNewConversation: true,
+        conversationIsCurrent: true,
+      };
+    });
+    const getUpdates = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ret: 0,
+        get_updates_buf: "cursor-1",
+        msgs: [
+          {
+            message_id: 993,
+            from_user_id: "owner",
+            message_type: 1,
+            context_token: "context-993",
+            item_list: [{ type: 1, text_item: { text: "long task" } }],
+          },
+        ],
+      })
+      .mockResolvedValueOnce({
+        ret: 0,
+        get_updates_buf: "cursor-2",
+        msgs: [],
+      });
+    const originalSaveCursor = store.saveSyncCursor.bind(store);
+    vi.spyOn(store, "saveSyncCursor").mockImplementation((cursor) => {
+      if (cursor === "cursor-1") {
+        expect(store.findTask("993")?.status).toBe("accepted");
+      }
+      originalSaveCursor(cursor);
+    });
+    const daemon = new CodelinkDaemon(
+      config,
+      store,
+      {
+        getUpdates,
+        sendText: vi.fn(async () => undefined),
+      } as unknown as WeixinClient,
+      { runTask },
+    );
+
+    await expect(daemon.pollOnce(session, "")).resolves.toBe("cursor-1");
+    await vi.waitFor(() => expect(runTask).toHaveBeenCalledTimes(1));
+    await expect(daemon.pollOnce(session, "cursor-1")).resolves.toBe(
+      "cursor-2",
+    );
+    expect(getUpdates).toHaveBeenCalledTimes(2);
+
+    finishTask();
+    await daemon.waitForIdle();
+  });
+
+  it("dispatches a later reply while an earlier Codex turn is still running", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "codelink-daemon-"));
+    cleanup.push(dir);
+    const store = new StateStore(dir);
+    const session: WeixinSession = {
+      accountId: "bot",
+      token: "token",
+      userId: "owner",
+      baseUrl: "https://ilinkai.weixin.qq.com",
+      savedAt: "now",
+    };
+    store.saveSession(session);
+    store.bindConversation("owner", { threadId: "active-thread" });
+    const config = defaultConfig();
+    config.security.allowedUserIds = ["owner"];
+    let finishFirst!: () => void;
+    const firstPending = new Promise<void>((resolve) => {
+      finishFirst = resolve;
+    });
+    const runTask = vi
+      .fn()
+      .mockImplementationOnce(async () => {
+        await firstPending;
+        return {
+          threadId: "active-thread",
+          finalResponse: "first done",
+          createdNewConversation: false,
+          conversationIsCurrent: true,
+        };
+      })
+      .mockResolvedValueOnce({
+        threadId: "active-thread",
+        finalResponse: "steered",
+        createdNewConversation: false,
+        conversationIsCurrent: true,
+      });
+    const daemon = new CodelinkDaemon(
+      config,
+      store,
+      { sendText: vi.fn(async () => undefined) } as unknown as WeixinClient,
+      { runTask },
+    );
+
+    const first = daemon.handleIncomingMessage(session, {
+      message_id: 994,
+      from_user_id: "owner",
+      message_type: 1,
+      context_token: "context-994",
+      item_list: [{ type: 1, text_item: { text: "start long work" } }],
+    });
+    await vi.waitFor(() => expect(runTask).toHaveBeenCalledTimes(1));
+    const second = daemon.handleIncomingMessage(session, {
+      message_id: 995,
+      from_user_id: "owner",
+      message_type: 1,
+      context_token: "context-995",
+      item_list: [{ type: 1, text_item: { text: "adjust it now" } }],
+    });
+
+    await vi.waitFor(() => expect(runTask).toHaveBeenCalledTimes(2));
+    await second;
+    await expect(daemon.drainBackgroundTasks(5)).resolves.toBe(false);
+    finishFirst();
+    await first;
+    await expect(daemon.drainBackgroundTasks(5)).resolves.toBe(true);
+  });
+
+  it("routes two same-batch messages through the first pending thread instead of starting two", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "codelink-daemon-"));
+    cleanup.push(dir);
+    const store = new StateStore(dir);
+    const session: WeixinSession = {
+      accountId: "bot",
+      token: "token",
+      userId: "owner",
+      baseUrl: "https://ilinkai.weixin.qq.com",
+      savedAt: "now",
+    };
+    store.saveSession(session);
+    const config = defaultConfig();
+    config.security.allowedUserIds = ["owner"];
+    let revealThread!: () => void;
+    let finishFirst!: () => void;
+    const firstPending = new Promise<void>((resolve) => {
+      finishFirst = resolve;
+    });
+    const runTask = vi
+      .fn()
+      .mockImplementationOnce(async (input: RunTaskInput) => {
+        revealThread = () => input.onThreadStarted?.("pending-thread");
+        await firstPending;
+        return {
+          threadId: "pending-thread",
+          finalResponse: "first done",
+          createdNewConversation: true,
+          conversationIsCurrent: true,
+        };
+      })
+      .mockResolvedValueOnce({
+        threadId: "pending-thread",
+        finalResponse: "second joined",
+        createdNewConversation: false,
+        conversationIsCurrent: true,
+      });
+    const daemon = new CodelinkDaemon(
+      config,
+      store,
+      {
+        getUpdates: vi.fn(async () => ({
+          ret: 0,
+          get_updates_buf: "cursor-batch",
+          msgs: [
+            {
+              message_id: 996,
+              from_user_id: "owner",
+              message_type: 1,
+              context_token: "context-996",
+              item_list: [{ type: 1, text_item: { text: "first" } }],
+            },
+            {
+              message_id: 997,
+              from_user_id: "owner",
+              message_type: 1,
+              context_token: "context-997",
+              item_list: [{ type: 1, text_item: { text: "second" } }],
+            },
+          ],
+        })),
+        sendText: vi.fn(async () => undefined),
+      } as unknown as WeixinClient,
+      { runTask },
+    );
+
+    await daemon.pollOnce(session, "");
+    await vi.waitFor(() => expect(runTask).toHaveBeenCalledTimes(1));
+    revealThread();
+    await vi.waitFor(() => expect(runTask).toHaveBeenCalledTimes(2));
+    expect(runTask.mock.calls[1]?.[0]).toMatchObject({
+      messageId: "997",
+      conversationAtReceipt: { threadId: "pending-thread" },
+    });
+
+    finishFirst();
+    await daemon.waitForIdle();
+  });
+
+  it("recovers accepted work and safely interrupts running work after restart", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "codelink-daemon-"));
+    cleanup.push(dir);
+    const store = new StateStore(dir);
+    const session: WeixinSession = {
+      accountId: "bot",
+      token: "token",
+      userId: "owner",
+      baseUrl: "https://ilinkai.weixin.qq.com",
+      savedAt: "now",
+    };
+    store.saveSession(session);
+    store.saveContextToken("owner", "context-owner");
+    store.acceptTask({
+      messageId: "recover-accepted",
+      fromUserId: "owner",
+      prompt: "recover my request",
+      promptPreview: "recover my request",
+      conversationAtReceipt: null,
+      status: "accepted",
+      startedAt: "2026-07-12T00:00:00.000Z",
+    });
+    store.acceptTask({
+      messageId: "recover-running",
+      fromUserId: "teammate",
+      threadId: "thread-already-started",
+      prompt: "resume the interrupted request",
+      promptPreview: "resume the interrupted request",
+      startNew: true,
+      conversationAtReceipt: null,
+      status: "running",
+      startedAt: "2026-07-12T00:01:00.000Z",
+    });
+    store.acceptTask({
+      messageId: "recover-outbox",
+      fromUserId: "owner",
+      threadId: "thread-complete",
+      prompt: "already executed",
+      promptPreview: "already executed",
+      status: "completed",
+      startedAt: "2026-07-12T00:02:00.000Z",
+      completedAt: "2026-07-12T00:03:00.000Z",
+      delivery: {
+        result: {
+          status: "pending",
+          updatedAt: "2026-07-12T00:03:00.000Z",
+          text: "persisted final result",
+          deliveryKey: "task:recover-outbox:result",
+        },
+      },
+    });
+    const runTask = vi.fn(async (input: RunTaskInput) => ({
+      threadId:
+        input.messageId === "recover-running"
+          ? "thread-already-started"
+          : "thread-recovered",
+      finalResponse: "recovered",
+      createdNewConversation: input.messageId !== "recover-running",
+      conversationIsCurrent: true,
+    }));
+    const sendText = vi.fn<(input: { text: string }) => Promise<void>>(
+      async () => undefined,
+    );
+    const daemon = new CodelinkDaemon(
+      defaultConfig(),
+      store,
+      { sendText } as unknown as WeixinClient,
+      { runTask },
+    );
+
+    expect(daemon.recoverPendingTasks(session)).toBe(2);
+    expect(daemon.recoverPendingDeliveries(session)).toBe(1);
+    await daemon.waitForIdle();
+
+    expect(runTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        messageId: "recover-accepted",
+        prompt: "recover my request",
+        recover: true,
+      }),
+    );
+    expect(runTask).not.toHaveBeenCalledWith(
+      expect.objectContaining({ messageId: "recover-running" }),
+    );
+    expect(store.findTask("recover-accepted")?.status).toBe("completed");
+    expect(store.findTask("recover-running")).toMatchObject({
+      status: "failed",
+      error: expect.stringContaining("避免重复执行"),
+    });
+    expect(store.findTask("recover-outbox")?.delivery?.result?.status).toBe(
+      "sent",
+    );
+    expect(sendText.mock.calls.some(([input]) => input.text === "persisted final result"))
+      .toBe(true);
+  });
+
+  it("marks health degraded and session-expired on WeChat errcode -14", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "codelink-daemon-"));
+    cleanup.push(dir);
+    const store = new StateStore(dir);
+    const session: WeixinSession = {
+      accountId: "bot",
+      token: "token",
+      userId: "owner",
+      baseUrl: "https://ilinkai.weixin.qq.com",
+      savedAt: "now",
+    };
+    store.saveSession(session);
+    const daemon = new CodelinkDaemon(
+      defaultConfig(),
+      store,
+      {
+        getUpdates: vi.fn(async () => ({ errcode: -14 })),
+        sendText: vi.fn(async () => undefined),
+      } as unknown as WeixinClient,
+      { runTask: vi.fn() },
+    );
+
+    expect(daemon.getStatus()).toMatchObject({
+      ok: false,
+      degraded: false,
+      sessionExpired: false,
+    });
+    await expect(daemon.pollOnce(session, "cursor-old")).rejects.toThrow(
+      "重新运行 codelink login",
+    );
+    expect(daemon.getStatus()).toMatchObject({
+      ok: false,
+      degraded: true,
+      sessionExpired: true,
+    });
+    expect(daemon.getStatus().lastPollErrorAt).toBeTruthy();
+    expect(store.loadSyncCursor()).toBe("");
+  });
+
+  it("keeps durable prompt and outbox payloads out of the public task list", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "codelink-daemon-"));
+    cleanup.push(dir);
+    const store = new StateStore(dir);
+    store.acceptTask({
+      messageId: "private-task",
+      fromUserId: "owner",
+      prompt: "full private request",
+      promptPreview: "private preview",
+      conversationAtReceipt: {
+        threadId: "private-thread",
+        updatedAt: "2026-07-12T00:00:00.000Z",
+      },
+      status: "completed",
+      startedAt: "2026-07-12T00:00:00.000Z",
+      delivery: {
+        result: {
+          status: "pending",
+          updatedAt: "2026-07-12T00:01:00.000Z",
+          text: "full private result",
+          deliveryKey: "private-delivery-key",
+        },
+      },
+    });
+    const daemon = new CodelinkDaemon(
+      defaultConfig(),
+      store,
+      { sendText: vi.fn() } as unknown as WeixinClient,
+      { runTask: vi.fn() },
+    );
+
+    const serialized = JSON.stringify(daemon.getRecentTasks());
+    expect(serialized).toContain("private preview");
+    expect(serialized).not.toContain("full private request");
+    expect(serialized).not.toContain("full private result");
+    expect(serialized).not.toContain("private-delivery-key");
+    expect(serialized).not.toContain("conversationAtReceipt");
   });
 
   it("ignores a user outside the allowlist", async () => {
@@ -189,13 +687,15 @@ describe("CodelinkDaemon", () => {
       ],
     });
 
-    expect(runTask).toHaveBeenCalledWith({
-      messageId: "101",
-      fromUserId: "owner",
-      prompt: "帮我分析另一个问题",
-      conversationAtReceipt: null,
-      startNew: true,
-    });
+    expect(runTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        messageId: "101",
+        fromUserId: "owner",
+        prompt: "帮我分析另一个问题",
+        conversationAtReceipt: null,
+        startNew: true,
+      }),
+    );
     expect(sendText.mock.calls[0][0].text).toContain("创建新 Codex 会话");
     expect(sendText.mock.calls[1][0].text).toContain("新会话已回复");
   });
@@ -243,14 +743,16 @@ describe("CodelinkDaemon", () => {
       item_list: [{ type: 1, text_item: { text: "continue this" } }],
     });
 
-    expect(runTask).toHaveBeenCalledWith({
-      messageId: "102",
-      fromUserId: "owner",
-      prompt: "continue this",
-      conversationAtReceipt: expect.objectContaining({
-        threadId: "thread-at-receipt",
+    expect(runTask).toHaveBeenCalledWith(
+      expect.objectContaining({
+        messageId: "102",
+        fromUserId: "owner",
+        prompt: "continue this",
+        conversationAtReceipt: expect.objectContaining({
+          threadId: "thread-at-receipt",
+        }),
       }),
-    });
+    );
     expect(sendText.mock.calls[1][0].text).toContain("微信当前会话已切换");
     expect(store.getConversation("owner")?.threadId).toBe(
       "newer-desktop-thread",
@@ -380,12 +882,14 @@ describe("CodelinkDaemon", () => {
 
     const older = daemon.sendNotification("older", undefined, threadId);
     await vi.waitFor(() => expect(sendText).toHaveBeenCalledTimes(1));
-    await expect(
-      daemon.sendNotification("newer", undefined, threadId),
-    ).resolves.toMatchObject({ conversationBound: true, threadId });
+    const newer = daemon.sendNotification("newer", undefined, threadId);
     rejectFirst?.(new Error("older notification failed"));
 
     await expect(older).rejects.toThrow("older notification failed");
+    await expect(newer).resolves.toMatchObject({
+      conversationBound: true,
+      threadId,
+    });
     expect(store.getConversation("owner")?.threadId).toBe(threadId);
   });
 });

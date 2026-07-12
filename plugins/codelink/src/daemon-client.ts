@@ -22,7 +22,7 @@ export class DaemonClient {
   }
 
   async status(): Promise<unknown> {
-    return this.request("/health", { method: "GET" });
+    return this.request("/health", { method: "GET" }, true);
   }
 
   async recentTasks(): Promise<unknown> {
@@ -41,7 +41,11 @@ export class DaemonClient {
     });
   }
 
-  private async request(pathname: string, init: RequestInit): Promise<unknown> {
+  private async request(
+    pathname: string,
+    init: RequestInit,
+    returnErrorBody = false,
+  ): Promise<unknown> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 10_000);
     try {
@@ -56,7 +60,7 @@ export class DaemonClient {
       } catch {
         data = { ok: false, error: text || `HTTP ${response.status}` };
       }
-      if (!response.ok) {
+      if (!response.ok && !returnErrorBody) {
         const error =
           data && typeof data === "object" && "error" in data
             ? String((data as { error: unknown }).error)

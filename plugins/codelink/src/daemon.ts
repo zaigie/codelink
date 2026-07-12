@@ -2,26 +2,63 @@ import http, { IncomingMessage, ServerResponse } from "node:http";
 
 import { parseNewConversationIntent } from "./conversation-intent.js";
 import { CodelinkConfig } from "./config.js";
-import { RunTaskInput, TaskRunner } from "./codex-task-runner.js";
+import {
+  RunTaskInput,
+  RunTaskResult,
+  TaskRunner,
+} from "./codex-task-runner.js";
 import { isCodexThreadId } from "./codex-thread-id.js";
-import { StateStore, WeixinSession } from "./state.js";
+import {
+  ConversationBinding,
+  StateStore,
+  TaskDeliveryRecord,
+  TaskRecord,
+  WeixinSession,
+} from "./state.js";
 import { WeixinClient } from "./weixin/client.js";
+import {
+  DeliveryReceipt,
+  WeixinTextDelivery,
+} from "./weixin/delivery.js";
 import { WeixinMessage } from "./weixin/types.js";
 
 type DaemonStatus = {
   ok: boolean;
+  degraded: boolean;
+  sessionExpired: boolean;
   accountId?: string;
   ownerUserId?: string;
   allowedUserIds: string[];
   hasDefaultContextToken: boolean;
   activeThreadId?: string;
   recentTasks: number;
+  activeTasks: number;
+  pollingStartedAt?: string;
+  lastPollSuccessAt?: string;
+  lastPollErrorAt?: string;
+  lastPollError?: string;
+};
+
+class WeixinSessionExpiredError extends Error {}
+
+type PendingThread = {
+  messageId: string;
+  promise: Promise<ConversationBinding | null>;
+  settle(threadId?: string): void;
 };
 
 export class CodelinkDaemon {
   private readonly server: http.Server;
+  private readonly delivery: WeixinTextDelivery;
+  private readonly backgroundTasks = new Set<Promise<void>>();
+  private readonly pendingThreads = new Map<string, PendingThread>();
   private stopping = false;
   private pollingStartedAt?: string;
+  private lastPollSuccessAt?: string;
+  private lastPollErrorAt?: string;
+  private lastPollError?: string;
+  private degraded = false;
+  private sessionExpired = false;
 
   constructor(
     private readonly config: CodelinkConfig,
@@ -29,6 +66,7 @@ export class CodelinkDaemon {
     private readonly client: WeixinClient,
     private readonly taskRunner: TaskRunner,
   ) {
+    this.delivery = new WeixinTextDelivery(client);
     this.server = http.createServer((request, response) => {
       void this.handleHttp(request, response);
     });
@@ -46,6 +84,13 @@ export class CodelinkDaemon {
       `CodeLink daemon API: http://${this.config.daemon.host}:${this.config.daemon.port}\n`,
     );
     process.stderr.write(`WeChat account: ${session.accountId}\n`);
+    const recovered = this.recoverPendingTasks(session);
+    const recoveredDeliveries = this.recoverPendingDeliveries(session);
+    if (recovered > 0 || recoveredDeliveries > 0) {
+      process.stderr.write(
+        `恢复未完成的 CodeLink 任务：${recovered}，待投递消息：${recoveredDeliveries}\n`,
+      );
+    }
     this.pollingStartedAt = new Date().toISOString();
     await this.poll(session);
   }
@@ -53,34 +98,73 @@ export class CodelinkDaemon {
   async stop(): Promise<void> {
     this.stopping = true;
     await new Promise<void>((resolve) => this.server.close(() => resolve()));
+    const drained = await this.drainBackgroundTasks(5_000);
+    if (!drained) {
+      process.stderr.write(
+        "CodeLink 在 5 秒内未完成全部后台任务；已持久化的任务会在下次启动时按安全恢复策略处理。\n",
+      );
+    }
   }
 
   private async poll(session: WeixinSession): Promise<void> {
     let cursor = this.store.loadSyncCursor();
     while (!this.stopping) {
       try {
-        const updates = await this.client.getUpdates(session, cursor);
-        if (updates.errcode === -14) {
-          throw new Error("微信 bot token 已过期，请重新运行 codelink login");
-        }
-        if (updates.ret && updates.ret !== 0) {
-          throw new Error(
-            `getupdates ret=${updates.ret}: ${updates.errmsg ?? "unknown"}`,
-          );
-        }
-        if (typeof updates.get_updates_buf === "string") {
-          cursor = updates.get_updates_buf;
-          this.store.saveSyncCursor(cursor);
-        }
-        for (const message of updates.msgs ?? []) {
-          await this.handleIncomingMessage(session, message);
-        }
+        cursor = await this.pollOnce(session, cursor);
       } catch (error) {
         process.stderr.write(
           `微信轮询错误：${error instanceof Error ? error.message : String(error)}\n`,
         );
+        if (error instanceof WeixinSessionExpiredError) {
+          process.stderr.write(
+            "微信登录已失效，轮询已暂停；请重新运行 codelink login 后重启 CodeLink 服务。\n",
+          );
+          return;
+        }
         if (!this.stopping) await delay(2_000);
       }
+    }
+  }
+
+  async pollOnce(session: WeixinSession, cursor: string): Promise<string> {
+    try {
+      const updates = await this.client.getUpdates(session, cursor);
+      if (updates.errcode === -14) {
+        throw new WeixinSessionExpiredError(
+          "微信 bot token 已过期，请重新运行 codelink login",
+        );
+      }
+      if (updates.errcode && updates.errcode !== 0) {
+        throw new Error(
+          `getupdates errcode=${updates.errcode}: ${updates.errmsg ?? "unknown"}`,
+        );
+      }
+      if (updates.ret && updates.ret !== 0) {
+        throw new Error(
+          `getupdates ret=${updates.ret}: ${updates.errmsg ?? "unknown"}`,
+        );
+      }
+
+      for (const message of updates.msgs ?? []) {
+        this.acceptIncomingMessage(session, message);
+      }
+
+      const nextCursor =
+        typeof updates.get_updates_buf === "string"
+          ? updates.get_updates_buf
+          : cursor;
+      if (nextCursor !== cursor) this.store.saveSyncCursor(nextCursor);
+      this.lastPollSuccessAt = new Date().toISOString();
+      this.degraded = false;
+      this.sessionExpired = false;
+      return nextCursor;
+    } catch (error) {
+      this.degraded = true;
+      this.sessionExpired = error instanceof WeixinSessionExpiredError;
+      this.lastPollErrorAt = new Date().toISOString();
+      this.lastPollError =
+        error instanceof Error ? error.message : String(error);
+      throw error;
     }
   }
 
@@ -88,6 +172,14 @@ export class CodelinkDaemon {
     session: WeixinSession,
     message: WeixinMessage,
   ): Promise<void> {
+    const completion = this.acceptIncomingMessage(session, message);
+    if (completion) await completion;
+  }
+
+  private acceptIncomingMessage(
+    session: WeixinSession,
+    message: WeixinMessage,
+  ): Promise<void> | undefined {
     if (message.message_type !== undefined && message.message_type !== 1)
       return;
     const fromUserId = message.from_user_id?.trim();
@@ -98,9 +190,6 @@ export class CodelinkDaemon {
       .filter(Boolean)
       .join("\n");
     if (!text) return;
-    if (message.context_token)
-      this.store.saveContextToken(fromUserId, message.context_token);
-
     const allowed = new Set(
       this.config.security.allowedUserIds.length > 0
         ? this.config.security.allowedUserIds
@@ -112,6 +201,8 @@ export class CodelinkDaemon {
       process.stderr.write(`忽略未授权微信用户：${fromUserId}\n`);
       return;
     }
+    if (message.context_token)
+      this.store.saveContextToken(fromUserId, message.context_token);
 
     const messageId = String(
       message.message_id ??
@@ -124,90 +215,574 @@ export class CodelinkDaemon {
       this.store.getContextToken(fromUserId)?.contextToken;
 
     if (text === "/status") {
-      if (contextToken)
-        await this.client.sendText({
-          session,
-          toUserId: fromUserId,
-          contextToken,
-          text: this.renderStatus(),
-        });
-      return;
+      return contextToken
+        ? this.trackBackground(
+            this.deliverOperationalText(
+              session,
+              fromUserId,
+              contextToken,
+              this.renderStatus(),
+            ),
+          )
+        : undefined;
     }
     if (text === "/help") {
-      if (contextToken) {
-        await this.client.sendText({
-          session,
-          toUserId: fromUserId,
-          contextToken,
-          text: "CodeLink：普通消息继续当前 Codex 会话；没有当前会话时自动新建。发送 /new，或直接说“开个新会话”，即可切换。命令：/status、/help。",
-        });
-      }
-      return;
+      return contextToken
+        ? this.trackBackground(
+            this.deliverOperationalText(
+              session,
+              fromUserId,
+              contextToken,
+              "CodeLink：普通消息继续当前 Codex 会话；没有当前会话时自动新建。发送 /new，或直接说“开个新会话”，即可切换。命令：/status、/help。",
+            ),
+          )
+        : undefined;
     }
 
     const conversationIntent = parseNewConversationIntent(text);
     if (conversationIntent.startNew) {
       this.store.clearConversation(fromUserId);
+      this.pendingThreads.delete(fromUserId);
       if (!conversationIntent.prompt) {
-        if (contextToken) {
-          await this.client.sendText({
-            session,
-            toUserId: fromUserId,
-            contextToken,
-            text: "已切换到新会话。直接发送下一条消息即可开始。",
-          });
-        }
-        return;
+        return contextToken
+          ? this.trackBackground(
+              this.deliverOperationalText(
+                session,
+                fromUserId,
+                contextToken,
+                "已切换到新会话。直接发送下一条消息即可开始。",
+              ),
+            )
+          : undefined;
       }
     }
 
-    const conversationAtReceipt = this.store.getConversation(fromUserId);
-
+    const conversationSnapshot = this.store.getConversationSnapshot(fromUserId);
+    const conversationAtReceipt = conversationSnapshot.binding;
+    const pendingAtReceipt = conversationIntent.startNew
+      ? undefined
+      : this.pendingThreads.get(fromUserId);
     const willCreateNewConversation =
       conversationIntent.startNew ||
-      !conversationAtReceipt;
-
-    if (contextToken) {
-      await this.client.sendText({
-        session,
-        toUserId: fromUserId,
-        contextToken,
-        text: `已收到，正在${willCreateNewConversation ? "创建新" : "继续当前"} Codex 会话（消息 ${messageId}）。`,
-      });
-    }
+      (!conversationAtReceipt && !pendingAtReceipt);
+    const ownedPending = willCreateNewConversation
+      ? this.createPendingThread(fromUserId, messageId)
+      : undefined;
 
     const input: RunTaskInput = {
       messageId,
       fromUserId,
       prompt: conversationIntent.prompt,
       conversationAtReceipt,
+      conversationGenerationAtReceipt: conversationSnapshot.generation,
       ...(conversationIntent.startNew ? { startNew: true } : {}),
+      ...(ownedPending
+        ? { onThreadStarted: (threadId: string) => ownedPending.settle(threadId) }
+        : {}),
     };
-    try {
-      const result = await this.taskRunner.runTask(input);
-      if (contextToken) {
-        const responseLabel = result.conversationIsCurrent
-          ? result.createdNewConversation
-            ? "新会话已回复"
-            : "当前会话已回复"
-          : "会话已回复（期间收到更晚的 CodeLink 通知，微信当前会话已切换）";
-        await this.sendChunks(
+    const now = new Date().toISOString();
+    if (
+      !this.store.acceptTask({
+        messageId,
+        fromUserId,
+        prompt: conversationIntent.prompt,
+        promptPreview: previewText(conversationIntent.prompt),
+        ...(conversationIntent.startNew ? { startNew: true } : {}),
+        conversationAtReceipt,
+        conversationGenerationAtReceipt: conversationSnapshot.generation,
+        status: "accepted",
+        startedAt: now,
+        delivery: {
+          acknowledgement: {
+            status: contextToken ? "pending" : "skipped",
+            updatedAt: now,
+          },
+        },
+      })
+    ) {
+      return;
+    }
+
+    const acknowledgement = contextToken
+      ? this.deliverTaskText(
+          messageId,
+          "acknowledgement",
           session,
           fromUserId,
           contextToken,
-          `${responseLabel}\nThread: ${result.threadId}\n\n${result.finalResponse}`,
+          `已收到，正在${willCreateNewConversation ? "创建新" : "继续当前"} Codex 会话（消息 ${messageId}）。`,
+        )
+      : Promise.resolve();
+    const execution = this.executeTask(
+      session,
+      input,
+      contextToken,
+      pendingAtReceipt?.promise,
+      ownedPending,
+    );
+    return this.trackBackground(
+      Promise.allSettled([acknowledgement, execution]).then(() => undefined),
+    );
+  }
+
+  recoverPendingTasks(session: WeixinSession): number {
+    const records = this.store
+      .listTasks(500)
+      .reverse()
+      .filter((task) => task.status === "accepted" || task.status === "running");
+    let recovered = 0;
+    for (const record of records) {
+      const contextToken = this.store.getContextToken(
+        record.fromUserId,
+      )?.contextToken;
+      if (record.status === "running") {
+        this.persistTaskFailure(
+          record.messageId,
+          `CodeLink 在任务执行期间重启；为避免重复执行可能产生副作用的请求，未自动重放。${record.threadId ? `可继续会话 ${record.threadId}，或重新发送请求。` : "请重新发送请求。"}`,
+          contextToken,
         );
+        recovered += 1;
+        continue;
       }
-    } catch (error) {
-      if (contextToken) {
-        await this.sendChunks(
-          session,
-          fromUserId,
+      if (typeof record.prompt !== "string") {
+        this.persistTaskFailure(
+          record.messageId,
+          "CodeLink 升级前的任务缺少可恢复请求正文，请重新发送",
           contextToken,
-          `任务执行失败：${error instanceof Error ? error.message : String(error)}`,
         );
+        continue;
+      }
+
+      let conversationAtReceipt = record.conversationAtReceipt;
+      let conversationGenerationAtReceipt =
+        record.conversationGenerationAtReceipt ??
+        this.store.getConversationSnapshot(record.fromUserId).generation;
+      let startNew = record.startNew;
+      if (record.threadId) {
+        const current = this.store.getConversationSnapshot(record.fromUserId);
+        conversationAtReceipt =
+          current.binding?.threadId === record.threadId
+            ? current.binding
+            : {
+                threadId: record.threadId,
+                updatedAt: new Date().toISOString(),
+              };
+        conversationGenerationAtReceipt = current.generation;
+        startNew = false;
+      }
+      if (startNew) this.pendingThreads.delete(record.fromUserId);
+      const pendingAtReceipt =
+        !startNew && !conversationAtReceipt
+          ? this.pendingThreads.get(record.fromUserId)
+          : undefined;
+      const willCreateNewConversation =
+        Boolean(startNew) || (!conversationAtReceipt && !pendingAtReceipt);
+      const ownedPending = willCreateNewConversation
+        ? this.createPendingThread(record.fromUserId, record.messageId)
+        : undefined;
+      const input: RunTaskInput = {
+        messageId: record.messageId,
+        fromUserId: record.fromUserId,
+        prompt: record.prompt,
+        conversationAtReceipt,
+        conversationGenerationAtReceipt,
+        recover: true,
+        ...(startNew ? { startNew: true } : {}),
+        ...(ownedPending
+          ? {
+              onThreadStarted: (threadId: string) =>
+                ownedPending.settle(threadId),
+            }
+          : {}),
+      };
+      this.trackBackground(
+        this.executeTask(
+          session,
+          input,
+          contextToken,
+          pendingAtReceipt?.promise,
+          ownedPending,
+        ),
+      );
+      recovered += 1;
+    }
+    return recovered;
+  }
+
+  recoverPendingDeliveries(session: WeixinSession): number {
+    let recovered = 0;
+    for (const task of this.store.listTasks(500).reverse()) {
+      for (const stage of ["acknowledgement", "result"] as const) {
+        const pending = task.delivery?.[stage];
+        if (pending?.status !== "pending") continue;
+        const contextToken = this.store.getContextToken(
+          task.fromUserId,
+        )?.contextToken;
+        if (!contextToken || !pending.text) {
+          this.store.updateTask(task.messageId, (current) => ({
+            ...current,
+            delivery: {
+              ...current.delivery,
+              [stage]: {
+                ...current.delivery?.[stage],
+                status: contextToken ? "failed" : "skipped",
+                updatedAt: new Date().toISOString(),
+                ...(!contextToken
+                  ? {}
+                  : { error: "持久化投递记录缺少消息正文" }),
+              },
+            },
+          }));
+          continue;
+        }
+        this.trackBackground(
+          this.deliverTaskText(
+            task.messageId,
+            stage,
+            session,
+            task.fromUserId,
+            contextToken,
+            pending.text,
+          ),
+        );
+        recovered += 1;
       }
     }
+    return recovered;
+  }
+
+  private createPendingThread(
+    userId: string,
+    messageId: string,
+  ): PendingThread {
+    let resolve!: (binding: ConversationBinding | null) => void;
+    let settled = false;
+    const promise = new Promise<ConversationBinding | null>((done) => {
+      resolve = done;
+    });
+    const pending: PendingThread = {
+      messageId,
+      promise,
+      settle: (threadId) => {
+        if (settled) return;
+        settled = true;
+        const current = this.store.getConversation(userId);
+        resolve(
+          threadId
+            ? current?.threadId === threadId
+              ? current
+              : { threadId, updatedAt: new Date().toISOString() }
+            : null,
+        );
+        if (this.pendingThreads.get(userId) === pending) {
+          this.pendingThreads.delete(userId);
+        }
+      },
+    };
+    this.pendingThreads.set(userId, pending);
+    return pending;
+  }
+
+  private async executeTask(
+    session: WeixinSession,
+    input: RunTaskInput,
+    contextToken?: string,
+    routeAfter?: Promise<ConversationBinding | null>,
+    ownedPending?: PendingThread,
+  ): Promise<void> {
+    const routedConversation = routeAfter
+      ? (await routeAfter) ?? this.store.getConversation(input.fromUserId)
+      : input.conversationAtReceipt;
+    const routedInput: RunTaskInput = routeAfter
+      ? { ...input, conversationAtReceipt: routedConversation }
+      : input;
+    const runnerInput: RunTaskInput = {
+      ...routedInput,
+      onResultReady: (readyResult) => {
+        routedInput.onResultReady?.(readyResult);
+        this.persistTaskResult(
+          routedInput.messageId,
+          readyResult,
+          contextToken,
+        );
+      },
+      onTaskFailed: (errorMessage) => {
+        routedInput.onTaskFailed?.(errorMessage);
+        this.persistTaskFailure(
+          routedInput.messageId,
+          errorMessage,
+          contextToken,
+        );
+      },
+    };
+    let result: RunTaskResult;
+    try {
+      result = await this.taskRunner.runTask(runnerInput);
+      routedInput.onThreadStarted?.(result.threadId);
+      this.persistTaskResult(routedInput.messageId, result, contextToken);
+    } catch (error) {
+      ownedPending?.settle();
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      this.persistTaskFailure(
+        routedInput.messageId,
+        errorMessage,
+        contextToken,
+      );
+      if (!contextToken) {
+        return;
+      }
+      await this.deliverTaskText(
+        routedInput.messageId,
+        "result",
+        session,
+        routedInput.fromUserId,
+        contextToken,
+        `任务执行失败：${errorMessage}`,
+      );
+      return;
+    }
+    if (!contextToken) {
+      return;
+    }
+    await this.deliverTaskText(
+      routedInput.messageId,
+      "result",
+      session,
+      routedInput.fromUserId,
+      contextToken,
+      formatTaskExecutionResult(result),
+    );
+  }
+
+  private persistTaskResult(
+    messageId: string,
+    result: RunTaskResult,
+    contextToken?: string,
+  ): void {
+    const now = new Date().toISOString();
+    this.store.updateTask(messageId, (current) => ({
+      ...current,
+      threadId: result.threadId,
+      ...(result.workspace ? { workspace: result.workspace } : {}),
+      prompt: undefined,
+      conversationAtReceipt: undefined,
+      conversationGenerationAtReceipt: undefined,
+      startNew: undefined,
+      status: "completed",
+      completedAt: now,
+      finalResponsePreview: previewText(result.finalResponse),
+      delivery: {
+        ...current.delivery,
+        result: contextToken
+          ? {
+              status: "pending",
+              updatedAt: now,
+              text: formatTaskExecutionResult(result),
+              deliveryKey: taskDeliveryKey(messageId, "result"),
+            }
+          : { status: "skipped", updatedAt: now },
+      },
+    }));
+  }
+
+  private persistTaskFailure(
+    messageId: string,
+    errorMessage: string,
+    contextToken?: string,
+  ): void {
+    const now = new Date().toISOString();
+    const text = `任务执行失败：${errorMessage}`;
+    this.store.updateTask(messageId, (current) => ({
+      ...current,
+      prompt: undefined,
+      conversationAtReceipt: undefined,
+      conversationGenerationAtReceipt: undefined,
+      startNew: undefined,
+      status: "failed",
+      completedAt: now,
+      error: errorMessage,
+      delivery: {
+        ...current.delivery,
+        result: contextToken
+          ? {
+              status: "pending",
+              updatedAt: now,
+              text,
+              deliveryKey: taskDeliveryKey(messageId, "result"),
+            }
+          : { status: "skipped", updatedAt: now },
+      },
+    }));
+  }
+
+  private async deliverTaskText(
+    messageId: string,
+    stage: "acknowledgement" | "result",
+    session: WeixinSession,
+    toUserId: string,
+    contextToken: string,
+    text: string,
+  ): Promise<void> {
+    const deliveryKey =
+      this.store.findTask(messageId)?.delivery?.[stage]?.deliveryKey ??
+      taskDeliveryKey(messageId, stage);
+    this.store.updateTask(messageId, (current) => ({
+      ...current,
+      delivery: {
+        ...current.delivery,
+        [stage]: {
+          status: "pending",
+          updatedAt: new Date().toISOString(),
+          text,
+          deliveryKey,
+        },
+      },
+    }));
+    try {
+      const receipt = await this.delivery.sendText({
+        session,
+        toUserId,
+        contextToken,
+        text,
+        deliveryKey,
+      });
+      this.recordTaskDelivery(messageId, stage, receipt);
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      this.store.updateTask(messageId, (current) => ({
+        ...current,
+        delivery: {
+          ...current.delivery,
+          [stage]: {
+            status: "failed",
+            updatedAt: new Date().toISOString(),
+            error: errorMessage,
+            text,
+            deliveryKey,
+          },
+        },
+      }));
+      process.stderr.write(
+        `微信消息投递失败（任务 ${messageId}，阶段 ${stage}）：${errorMessage}\n`,
+      );
+    }
+  }
+
+  private recordTaskDelivery(
+    messageId: string,
+    stage: "acknowledgement" | "result",
+    receipt: DeliveryReceipt,
+  ): void {
+    const failed = receipt.sentChunks !== receipt.totalChunks;
+    this.store.updateTask(messageId, (current) => {
+      const pending = current.delivery?.[stage];
+      return {
+        ...current,
+        delivery: {
+          ...current.delivery,
+          [stage]: {
+            status: failed ? "failed" : "sent",
+            updatedAt: new Date().toISOString(),
+            totalChunks: receipt.totalChunks,
+            sentChunks: receipt.sentChunks,
+            ...(receipt.failedChunkIndex !== undefined
+              ? { failedChunkIndex: receipt.failedChunkIndex }
+              : {}),
+            ...(receipt.errorCode !== undefined
+              ? { errorCode: receipt.errorCode }
+              : {}),
+            ...(failed
+              ? {
+                  error:
+                    receipt.error ??
+                    `微信投递未完成（${receipt.sentChunks}/${receipt.totalChunks} 段）`,
+                  ...(pending?.text ? { text: pending.text } : {}),
+                  ...(pending?.deliveryKey
+                    ? { deliveryKey: pending.deliveryKey }
+                    : {}),
+                }
+              : {}),
+          },
+        },
+      };
+    });
+    if (failed) {
+      process.stderr.write(
+        `微信消息投递未完成（任务 ${messageId}，阶段 ${stage}，已发送 ${receipt.sentChunks}/${receipt.totalChunks} 段）。\n`,
+      );
+    }
+  }
+
+  private markTaskDeliverySkipped(
+    messageId: string,
+    stage: "acknowledgement" | "result",
+  ): void {
+    this.store.updateTask(messageId, (current) => ({
+      ...current,
+      delivery: {
+        ...current.delivery,
+        [stage]: {
+          status: "skipped",
+          updatedAt: new Date().toISOString(),
+        },
+      },
+    }));
+  }
+
+  private async deliverOperationalText(
+    session: WeixinSession,
+    toUserId: string,
+    contextToken: string,
+    text: string,
+  ): Promise<void> {
+    try {
+      const receipt = await this.delivery.sendText({
+        session,
+        toUserId,
+        contextToken,
+        text,
+      });
+      if (receipt.sentChunks !== receipt.totalChunks) {
+        process.stderr.write("微信操作消息未能完整投递。\n");
+      }
+    } catch (error) {
+      process.stderr.write(
+        `微信操作消息投递失败：${error instanceof Error ? error.message : String(error)}\n`,
+      );
+    }
+  }
+
+  private trackBackground(promise: Promise<void>): Promise<void> {
+    const tracked = promise.catch((error) => {
+      process.stderr.write(
+        `CodeLink 后台任务错误：${error instanceof Error ? error.message : String(error)}\n`,
+      );
+    });
+    this.backgroundTasks.add(tracked);
+    tracked.then(
+      () => this.backgroundTasks.delete(tracked),
+      () => this.backgroundTasks.delete(tracked),
+    );
+    return tracked;
+  }
+
+  async waitForIdle(): Promise<void> {
+    while (this.backgroundTasks.size > 0) {
+      await Promise.all([...this.backgroundTasks]);
+    }
+  }
+
+  async drainBackgroundTasks(timeoutMs: number): Promise<boolean> {
+    if (this.backgroundTasks.size === 0) return true;
+    return new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => resolve(false), timeoutMs);
+      void this.waitForIdle().then(() => {
+        clearTimeout(timer);
+        resolve(true);
+      });
+    });
   }
 
   private async handleHttp(
@@ -216,10 +791,11 @@ export class CodelinkDaemon {
   ): Promise<void> {
     try {
       if (request.method === "GET" && request.url === "/health") {
-        return this.json(response, 200, this.status());
+        const status = this.getStatus();
+        return this.json(response, status.ok ? 200 : 503, status);
       }
       if (request.method === "GET" && request.url?.startsWith("/tasks")) {
-        return this.json(response, 200, { tasks: this.store.listTasks(20) });
+        return this.json(response, 200, { tasks: this.getRecentTasks() });
       }
       if (request.method === "POST" && request.url === "/send") {
         const body = await readJsonBody(request);
@@ -249,14 +825,16 @@ export class CodelinkDaemon {
     }
   }
 
-  private status(): DaemonStatus {
+  getStatus(): DaemonStatus {
     const session = this.store.loadSession();
     const ownerUserId = session?.userId;
     const activeThreadId = ownerUserId
       ? this.store.getConversation(ownerUserId)?.threadId
       : undefined;
     return {
-      ok: Boolean(session && this.pollingStartedAt),
+      ok: Boolean(session && this.lastPollSuccessAt && !this.degraded),
+      degraded: this.degraded,
+      sessionExpired: this.sessionExpired,
       accountId: session?.accountId,
       ownerUserId,
       allowedUserIds: this.config.security.allowedUserIds,
@@ -265,18 +843,34 @@ export class CodelinkDaemon {
       ),
       ...(activeThreadId ? { activeThreadId } : {}),
       recentTasks: this.store.listTasks(500).length,
+      activeTasks: this.backgroundTasks.size,
+      ...(this.pollingStartedAt
+        ? { pollingStartedAt: this.pollingStartedAt }
+        : {}),
+      ...(this.lastPollSuccessAt
+        ? { lastPollSuccessAt: this.lastPollSuccessAt }
+        : {}),
+      ...(this.lastPollErrorAt
+        ? { lastPollErrorAt: this.lastPollErrorAt }
+        : {}),
+      ...(this.lastPollError ? { lastPollError: this.lastPollError } : {}),
     };
   }
 
   private renderStatus(): string {
-    const status = this.status();
+    const status = this.getStatus();
     return [
-      `CodeLink: ${status.ok ? "运行中" : "未就绪"}`,
+      `CodeLink: ${status.ok ? "运行中" : status.sessionExpired ? "微信登录已失效" : status.degraded ? "轮询异常" : "未就绪"}`,
       `账号: ${status.accountId ?? "未登录"}`,
       `默认通知上下文: ${status.hasDefaultContextToken ? "可用" : "尚未建立"}`,
       `当前 Codex 会话: ${status.activeThreadId ?? "尚未绑定"}`,
+      `后台任务: ${status.activeTasks}`,
       `任务记录: ${status.recentTasks}`,
     ].join("\n");
+  }
+
+  getRecentTasks(limit = 20): unknown[] {
+    return this.store.listTasks(limit).map(toPublicTaskRecord);
   }
 
   async sendNotification(
@@ -314,12 +908,18 @@ export class CodelinkDaemon {
       ? this.store.getConversation(toUserId)
       : null;
     try {
-      await this.sendChunks(
+      const receipt = await this.delivery.sendText({
         session,
         toUserId,
-        context.contextToken,
-        formatTaskNotification(text, Boolean(threadId)),
-      );
+        contextToken: context.contextToken,
+        text: formatTaskNotification(text, Boolean(threadId)),
+      });
+      if (receipt.sentChunks !== receipt.totalChunks) {
+        throw new Error(
+          receipt.error ??
+            `微信通知未完整投递（已发送 ${receipt.sentChunks} 段）`,
+        );
+      }
     } catch (error) {
       if (threadId && notificationBinding) {
         this.store.replaceConversationIfUnchanged(
@@ -336,22 +936,6 @@ export class CodelinkDaemon {
       conversationBound: Boolean(threadId),
       ...(threadId ? { threadId } : {}),
     };
-  }
-
-  private async sendChunks(
-    session: WeixinSession,
-    toUserId: string,
-    contextToken: string,
-    text: string,
-  ): Promise<void> {
-    for (const chunk of chunkText(text, 1800)) {
-      await this.client.sendText({
-        session,
-        toUserId,
-        contextToken,
-        text: chunk,
-      });
-    }
   }
 
   private requireSession(): WeixinSession {
@@ -386,26 +970,71 @@ async function readJsonBody(
   return value as Record<string, unknown>;
 }
 
-function chunkText(text: string, max: number): string[] {
-  const normalized = text.trim();
-  if (!normalized) return ["（空消息）"];
-  const result: string[] = [];
-  let rest = normalized;
-  while (rest.length > max) {
-    let index = rest.lastIndexOf("\n", max);
-    if (index < max / 2) index = max;
-    result.push(rest.slice(0, index));
-    rest = rest.slice(index).replace(/^\s+/, "");
-  }
-  if (rest) result.push(rest);
-  return result;
-}
-
 function formatTaskNotification(text: string, conversationBound: boolean) {
   const footer = conversationBound
     ? "—— CodeLink 任务通知\n此任务已设为微信当前 Codex 会话；可直接回复继续，发送 /new 或直接说“开个新会话”开始新会话。"
     : "—— CodeLink 任务通知\n本通知未切换当前 Codex 会话；回复将继续此前已绑定的会话（如有），发送 /new 开始新会话。";
   return `${text.trim()}\n\n${footer}`;
+}
+
+function previewText(value: string, max = 500): string {
+  const normalized = value.replace(/\s+/g, " ").trim();
+  return normalized.length <= max
+    ? normalized
+    : `${normalized.slice(0, max - 1)}…`;
+}
+
+function toPublicTaskRecord(task: TaskRecord): Record<string, unknown> {
+  const {
+    prompt: _prompt,
+    conversationAtReceipt: _conversationAtReceipt,
+    conversationGenerationAtReceipt: _conversationGenerationAtReceipt,
+    startNew: _startNew,
+    delivery,
+    ...visible
+  } = task;
+  return {
+    ...visible,
+    ...(delivery
+      ? {
+          delivery: {
+            ...(delivery.acknowledgement
+              ? {
+                  acknowledgement: toPublicDeliveryRecord(
+                    delivery.acknowledgement,
+                  ),
+                }
+              : {}),
+            ...(delivery.result
+              ? { result: toPublicDeliveryRecord(delivery.result) }
+              : {}),
+          },
+        }
+      : {}),
+  };
+}
+
+function toPublicDeliveryRecord(
+  delivery: TaskDeliveryRecord,
+): Record<string, unknown> {
+  const { text: _text, deliveryKey: _deliveryKey, ...visible } = delivery;
+  return visible;
+}
+
+function formatTaskExecutionResult(result: RunTaskResult): string {
+  const responseLabel = result.conversationIsCurrent
+    ? result.createdNewConversation
+      ? "新会话已回复"
+      : "当前会话已回复"
+    : "会话已回复（期间收到更晚的 CodeLink 通知，微信当前会话已切换）";
+  return `${responseLabel}\nThread: ${result.threadId}\n\n${result.finalResponse}`;
+}
+
+function taskDeliveryKey(
+  messageId: string,
+  stage: "acknowledgement" | "result",
+): string {
+  return `task:${messageId}:${stage}`;
 }
 
 function delay(ms: number): Promise<void> {

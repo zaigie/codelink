@@ -1,60 +1,59 @@
 # CodeLink
 
-在微信里继续 Codex，也让任意 Codex 任务主动找你。
+在微信里继续 Codex，也让任意 Codex 任务主动找你。CodeLink 不安装、不运行、也不依赖 OpenClaw。
 
-- 微信消息默认继续当前 Codex 会话；没有当前会话时自动新建；
-- 在 Codex 桌面版使用 `@CodeLink` 发送通知，这个任务就会成为微信当前会话；
-- 收到通知后可直接在微信回复继续，也可以自然地要求开始新会话；
-- 不安装、不运行、也不依赖 OpenClaw。
+## 最快使用
 
-## 它怎么工作
+1. 在微信进入 **设置 → 插件**，找到 **微信 ClawBot** 并启用。
+2. 不要先下载仓库。新建一个 Codex 任务，把下面整段话发给它：
+
+```text
+请帮我安装一个用于连接微信和 Codex 的插件 CodeLink。
+官方仓库：https://github.com/zaigie/codelink
+安装参考：https://github.com/zaigie/codelink/blob/main/INSTALL.md
+请先完整阅读安装参考，检查本机环境，然后自行克隆或更新到持久目录并完成安装。出现微信二维码后，必须把二维码图片直接显示在当前主会话中并停下来等我扫码，不要只给文件路径，也不要把图片藏在需要展开的执行过程里；不要安装 OpenClaw，也不要输出任何 session 或 token。
+```
+
+Codex 直接展示二维码后，用已经启用微信 ClawBot 的微信扫码即可连接。剩下的克隆、构建、插件安装和后台服务注册都由 Codex 完成。详细提示词也收录在 [INSTALL_PROMPT.md](INSTALL_PROMPT.md)。
+
+## 能做什么
 
 | 你做什么 | CodeLink 做什么 |
 | --- | --- |
-| 微信发送普通消息 | 继续当前会话；没有当前会话时新建并绑定 |
-| 微信发送 `/new` 或 `/new 帮我……` | 忽略旧绑定，从新会话开始 |
-| 微信说“开个新会话”“换个话题……” | 识别明确意图，不强制记忆 `/new` |
-| 桌面任务中说 `@CodeLink 完成后微信通知我` | 通知微信，并把这个桌面任务设为当前会话 |
-| 另一个桌面任务再次 `@CodeLink` | 切换到最近通知的任务 |
+| 微信发送普通消息 | 继续当前 Codex 会话；没有当前会话时自动新建 |
+| 微信发送 `/new` 或说“开个新会话” | 忽略旧上下文，从新会话开始 |
+| 桌面任务中说 `@CodeLink 完成后微信通知我` | 通知微信，并把这个任务设为微信当前会话 |
 | 收到通知后直接回复 | 继续通知来源的 Codex 会话 |
+| 另一个桌面任务再次 `@CodeLink` | 切换到最近通知的任务 |
 
-每个授权微信用户各自维护一个当前会话。Codex 对话历史由 Codex 保存，CodeLink 只需保存当前 thread ID。
-若多个任务同时运行，以最近一次成功的切换为准；较早任务稍后完成时只返回结果，不会抢回当前会话。
+每个授权微信用户只保存一个当前 thread ID；完整对话历史仍由 Codex 管理。多个任务并行时，较早任务稍后完成也不会抢回已经更新的绑定。
 
-## 安装
+## 支持系统
 
-要求：macOS、Node.js 22+，以及已登录的 ChatGPT/Codex App 或 Codex CLI。
+CodeLink 核心不是 macOS 专用：运行时为 Node.js 和纯 JavaScript 依赖，没有原生扩展，也不区分 Intel、Apple Silicon、AMD 或 ARM。当前自动安装覆盖官方 Codex 提供原生二进制的这些组合：
 
-最简单的方式是新建一个 Codex 任务，把 [INSTALL_PROMPT.md](INSTALL_PROMPT.md) 中的提示词完整复制进去。
+| 系统 | 架构 | 自动常驻方式 |
+| --- | --- | --- |
+| macOS | x64、arm64 | LaunchAgent |
+| Linux | x64、arm64 | systemd user service |
+| Windows | x64、arm64 | 当前用户的 Scheduled Task |
 
-也可以手动运行：
+macOS 路线已经实机运行；Linux 与 Windows 安装器已完成纯函数、无副作用预检和脚本语法覆盖，仍建议在对应系统完成首轮实机回归后再标记为稳定。
 
-```bash
-git clone https://github.com/zaigie/codelink.git
-cd codelink
-chmod +x plugins/codelink/scripts/*.sh
-./plugins/codelink/scripts/setup.sh
-```
+共同要求：Node.js 22+、Git、已经安装并登录的 Codex，以及能够访问 GitHub、npm、腾讯 iLink 的网络。Linux 若不使用 systemd，核心仍可运行，但需要用现有进程管理器或前台启动 daemon；这属于常驻方式差异，不是 CodeLink 核心不支持 Linux。
 
-安装器会构建插件、展示腾讯 iLink 登录二维码、注册 macOS LaunchAgent，并检查后台服务。微信凭证只保存在 `~/.codelink`，不会读取 `~/.openclaw`。
-
-完整要求、更新和卸载方式见 [INSTALL.md](INSTALL.md)。
+安装器会把 Codex 原生二进制的绝对路径写入用户态服务，避免 launchd、systemd 或 Windows 计划任务拿不到交互式终端的 PATH。其他 CPU 架构取决于 Node.js 与官方 Codex 是否提供对应二进制，当前不笼统承诺支持。
 
 ## 在微信中使用
 
-首次扫码的用户会成为默认授权用户。之后直接发送文字即可：
+直接发送文字即可。后续消息默认继续同一会话：
 
 ```text
-分析这个报错，并给我排查步骤……
+分析这个报错，并给我排查步骤。
+再结合刚才的日志缩小范围。
 ```
 
-下一条消息默认继续同一会话：
-
-```text
-再结合刚才的日志缩小一下范围。
-```
-
-需要新上下文时，可以使用任一种表达：
+需要新上下文时，可以使用命令或自然语言：
 
 ```text
 /new
@@ -65,10 +64,10 @@ chmod +x plugins/codelink/scripts/*.sh
 
 辅助命令：
 
-- `/status`：查看连接状态和当前 thread ID；
+- `/status`：查看连接和当前会话状态；
 - `/help`：查看简要说明。
 
-## 在 Codex 桌面版中使用
+## 在 Codex 中使用
 
 安装后新建一个 Codex 任务，在输入框键入 `@` 选择 **CodeLink**：
 
@@ -77,28 +76,16 @@ chmod +x plugins/codelink/scripts/*.sh
 @CodeLink 把当前进度发到微信，我稍后从微信继续。
 ```
 
-通知由后台统一追加：
+通知会说明当前任务已经成为微信当前会话。模型不需要知道或填写 thread ID；如果 Codex 没有提供可信的调用方 thread 元数据，消息仍可发送，但 CodeLink 不会错误切换已有绑定。
 
-```text
-—— CodeLink 任务通知
-此任务已设为微信当前 Codex 会话；可直接回复继续，发送 /new 或直接说“开个新会话”开始新会话。
-```
-
-模型不需要知道或填写 thread ID；CodeLink 从 Codex 提供给 MCP 工具的调用元数据中读取它。若当前环境未提供可信 thread 元数据，通知仍可发送，但不会错误切换已有绑定。
-
-## 两类会话
-
-- **微信新建的会话**：CodeLink 创建独立工作目录，使用安全默认配置；它会保存到 Codex，但不保证实时出现在 Codex App 左侧列表。
-- **桌面任务绑定的会话**：保留原任务的项目、上下文和设置；微信回复会通过官方 `thread/resume` 继续它。
-
-CodeLink 使用 OpenAI 官方公开的 [Codex App Server](https://learn.chatgpt.com/docs/app-server)，不会修改 App 数据库、伪装官方客户端或连接私有 IPC。详细边界见 [docs/CAPABILITY_BOUNDARY.md](docs/CAPABILITY_BOUNDARY.md)。
-
-## 当前边界
+## 能力边界
 
 - 当前只处理文字消息；
-- 微信续接不等于 HITL 审批，不能在微信批准 Codex 工具调用或权限请求；
-- 当前小白常驻安装只支持 macOS LaunchAgent；
-- 微信新建会话的 Codex App 侧栏展示不作为验收项。
+- 微信续接不是 HITL 审批，不能在微信批准工具调用或权限请求；
+- 微信新建的会话会保存到 Codex，但不保证实时出现在 Codex App 左侧列表；
+- CodeLink 使用公开的 [Codex App Server](https://developers.openai.com/codex/app-server/)，不会修改 App 数据库、伪装官方客户端或连接私有 IPC。
+
+完整安装、更新、卸载和故障排查见 [INSTALL.md](INSTALL.md)，更精确的产品边界见 [docs/CAPABILITY_BOUNDARY.md](docs/CAPABILITY_BOUNDARY.md)。
 
 ## 开发
 

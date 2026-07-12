@@ -29,6 +29,11 @@ export type RunTaskInput = {
   prompt: string;
   startNew?: boolean;
   conversationAtReceipt?: ConversationBinding | null;
+  conversationGenerationAtReceipt?: number;
+  recover?: boolean;
+  onThreadStarted?: (threadId: string) => void;
+  onResultReady?: (result: RunTaskResult) => void;
+  onTaskFailed?: (error: string) => void;
 };
 
 export type RunTaskResult = {
@@ -52,27 +57,40 @@ export class CodexTaskRunner implements TaskRunner {
 
   async runTask(input: RunTaskInput): Promise<RunTaskResult> {
     const existing = this.store.findTask(input.messageId);
-    if (existing) {
+    if (existing && existing.status !== "accepted") {
       throw new Error(
         `消息 ${input.messageId} 已创建过任务（状态：${existing.status}）`,
       );
     }
 
+    const snapshotAtTaskStart = this.store.getConversationSnapshot(
+      input.fromUserId,
+    );
     const bindingAtTaskStart =
       input.conversationAtReceipt === undefined
-        ? this.store.getConversation(input.fromUserId)
+        ? snapshotAtTaskStart.binding
         : input.conversationAtReceipt;
+    const generationAtTaskStart =
+      input.conversationGenerationAtReceipt ?? snapshotAtTaskStart.generation;
     const conversation = input.startNew ? null : bindingAtTaskStart;
     const workspace = conversation ? undefined : this.createTaskWorkspace();
     const executionCwd = workspace ?? this.ensureTaskWorkspaceRoot();
     const startedAt = new Date().toISOString();
     const record: TaskRecord = {
-      messageId: input.messageId,
-      fromUserId: input.fromUserId,
+      ...(existing ?? {
+        messageId: input.messageId,
+        fromUserId: input.fromUserId,
+        prompt: input.prompt,
+        promptPreview: preview(input.prompt),
+        ...(input.startNew ? { startNew: true } : {}),
+        ...(input.conversationAtReceipt !== undefined
+          ? { conversationAtReceipt: input.conversationAtReceipt }
+          : {}),
+        conversationGenerationAtReceipt: generationAtTaskStart,
+        startedAt,
+      }),
       ...(workspace ? { workspace } : {}),
-      promptPreview: preview(input.prompt),
       status: "running",
-      startedAt,
     };
     this.store.upsertTask(record);
 
@@ -94,6 +112,19 @@ export class CodexTaskRunner implements TaskRunner {
             {
               ...options,
               developerInstructions: CODELINK_CONVERSATION_INSTRUCTIONS,
+              onThreadStarted: ({ threadId }) => {
+                this.store.bindConversationIfUnchanged(
+                  input.fromUserId,
+                  bindingAtTaskStart,
+                  threadId,
+                  generationAtTaskStart,
+                );
+                this.store.updateTask(input.messageId, (current) => ({
+                  ...current,
+                  threadId,
+                }));
+                input.onThreadStarted?.(threadId);
+              },
             },
             input.prompt,
           );
@@ -101,34 +132,47 @@ export class CodexTaskRunner implements TaskRunner {
         input.fromUserId,
         bindingAtTaskStart,
         result.threadId,
+        generationAtTaskStart,
       );
       const conversationIsCurrent =
         this.store.getConversation(input.fromUserId)?.threadId ===
         result.threadId;
       const resolvedWorkspace = workspace ?? result.cwd;
-      const completed: TaskRecord = {
-        ...record,
-        ...(resolvedWorkspace ? { workspace: resolvedWorkspace } : {}),
-        threadId: result.threadId,
-        status: "completed",
-        completedAt: new Date().toISOString(),
-        finalResponsePreview: preview(result.finalResponse),
-      };
-      this.store.upsertTask(completed);
-      return {
+      const taskResult: RunTaskResult = {
         threadId: result.threadId,
         finalResponse: result.finalResponse,
         ...(resolvedWorkspace ? { workspace: resolvedWorkspace } : {}),
         createdNewConversation: !conversation,
         conversationIsCurrent,
       };
+      input.onResultReady?.(taskResult);
+      this.store.updateTask(input.messageId, (current) => ({
+        ...current,
+        ...(resolvedWorkspace ? { workspace: resolvedWorkspace } : {}),
+        threadId: result.threadId,
+        prompt: undefined,
+        conversationAtReceipt: undefined,
+        conversationGenerationAtReceipt: undefined,
+        startNew: undefined,
+        status: "completed",
+        completedAt: new Date().toISOString(),
+        finalResponsePreview: preview(result.finalResponse),
+      }));
+      return taskResult;
     } catch (error) {
-      this.store.upsertTask({
-        ...record,
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      input.onTaskFailed?.(errorMessage);
+      this.store.updateTask(input.messageId, (current) => ({
+        ...current,
+        prompt: undefined,
+        conversationAtReceipt: undefined,
+        conversationGenerationAtReceipt: undefined,
+        startNew: undefined,
         status: "failed",
         completedAt: new Date().toISOString(),
-        error: error instanceof Error ? error.message : String(error),
-      });
+        error: errorMessage,
+      }));
       throw error;
     }
   }

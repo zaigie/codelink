@@ -62,6 +62,50 @@ describe("StateStore", () => {
     expect(store.findTask("42")?.status).toBe("completed");
   });
 
+  it("persists acceptance before execution and merges delivery updates", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "codelink-state-"));
+    cleanup.push(dir);
+    const store = new StateStore(dir);
+    const accepted = {
+      messageId: "accepted-1",
+      fromUserId: "owner",
+      promptPreview: "do the work",
+      status: "accepted" as const,
+      startedAt: "2026-07-12T00:00:00.000Z",
+      delivery: {
+        acknowledgement: {
+          status: "pending" as const,
+          updatedAt: "2026-07-12T00:00:00.000Z",
+        },
+      },
+    };
+
+    expect(store.acceptTask(accepted)).toBe(true);
+    expect(store.acceptTask(accepted)).toBe(false);
+    store.updateTask("accepted-1", (current) => ({
+      ...current,
+      status: "running",
+      delivery: {
+        ...current.delivery,
+        acknowledgement: {
+          status: "failed",
+          updatedAt: "2026-07-12T00:00:01.000Z",
+          error: "network unavailable",
+        },
+      },
+    }));
+
+    expect(store.findTask("accepted-1")).toMatchObject({
+      status: "running",
+      delivery: {
+        acknowledgement: {
+          status: "failed",
+          error: "network unavailable",
+        },
+      },
+    });
+  });
+
   it("persists, replaces, and clears the active Codex conversation per WeChat user", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "codelink-state-"));
     cleanup.push(dir);
@@ -111,5 +155,25 @@ describe("StateStore", () => {
       store.bindConversationIfUnchanged("new-user", null, "thread-new"),
     ).toBe(true);
     expect(store.getConversation("new-user")?.threadId).toBe("thread-new");
+  });
+
+  it("treats an explicit clear as a new generation even when no thread was bound", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "codelink-state-"));
+    cleanup.push(dir);
+    const store = new StateStore(dir);
+    const beforeClear = store.getConversationSnapshot("owner");
+
+    store.clearConversation("owner");
+
+    expect(
+      store.bindConversationIfUnchanged(
+        "owner",
+        beforeClear.binding,
+        "stale-thread",
+        beforeClear.generation,
+      ),
+    ).toBe(false);
+    expect(store.getConversation("owner")).toBeNull();
+    expect(store.getConversationSnapshot("owner").generation).toBe(1);
   });
 });

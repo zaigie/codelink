@@ -21,29 +21,36 @@ export async function loginWithQr(params: {
   onQr?: (progress: LoginProgress) => void | Promise<void>;
 }): Promise<WeixinSession> {
   const existing = params.store.loadSession();
-  const qr = params.legacyGet
-    ? await params.client.getQrCodeLegacy()
-    : await params.client.getQrCode(existing?.token ? [existing.token] : []);
   const qrPath = params.store.path("login-qr.png");
   params.store.ensure();
-  await QRCode.toFile(qrPath, qr.qrcode_img_content, {
-    errorCorrectionLevel: "M",
-    margin: 2,
-    width: 512,
-  });
-  try {
-    fs.chmodSync(qrPath, 0o600);
-  } catch {
-    // Best effort only.
-  }
 
-  qrcodeTerminal.generate(qr.qrcode_img_content, { small: true });
-  process.stdout.write(`\n二维码文件：${qrPath}\n`);
-  process.stdout.write(
-    `登录协议：${params.legacyGet ? "legacy GET" : "official POST"}\n`,
-  );
-  process.stdout.write(`备用链接：${qr.qrcode_img_content}\n\n`);
-  await params.onQr?.({ qrPath, qrContent: qr.qrcode_img_content });
+  const requestQr = () =>
+    params.legacyGet
+      ? params.client.getQrCodeLegacy()
+      : params.client.getQrCode(existing?.token ? [existing.token] : []);
+  const publishQr = async (qrContent: string) => {
+    await QRCode.toFile(qrPath, qrContent, {
+      errorCorrectionLevel: "M",
+      margin: 2,
+      width: 512,
+    });
+    try {
+      fs.chmodSync(qrPath, 0o600);
+    } catch {
+      // Best effort only.
+    }
+
+    qrcodeTerminal.generate(qrContent, { small: true });
+    process.stdout.write(`\n二维码文件：${qrPath}\n`);
+    process.stdout.write(
+      `登录协议：${params.legacyGet ? "legacy GET" : "official POST"}\n`,
+    );
+    process.stdout.write("请扫描上方二维码；Codex 安装时应直接展示 PNG 图片。\n\n");
+    await params.onQr?.({ qrPath, qrContent });
+  };
+
+  let qr = await requestQr();
+  await publishQr(qr.qrcode_img_content);
 
   const timeoutMs = params.timeoutMs ?? 8 * 60_000;
   const deadline = Date.now() + timeoutMs;
@@ -119,8 +126,12 @@ export async function loginWithQr(params: {
           params.store.saveConfig(config);
         }
         process.stdout.write(`登录成功，账号：${session.accountId}\n`);
+        const credentialProtection =
+          process.platform === "win32"
+            ? "当前用户配置目录"
+            : "权限 0600";
         process.stdout.write(
-          `凭证已保存：${params.store.path("weixin-session.json")}（权限 0600）\n`,
+          `凭证已保存：${params.store.path("weixin-session.json")}（${credentialProtection}）\n`,
         );
         process.stdout.write(
           `同步游标：${params.store.path("get-updates.json")}\n`,
@@ -137,7 +148,12 @@ export async function loginWithQr(params: {
         }
         throw new Error("微信返回已绑定状态，但本地没有可复用的凭证");
       case "expired":
-        throw new Error("二维码已过期，请重新运行 codelink login");
+        process.stdout.write("二维码已过期，正在自动刷新。\n");
+        qr = await requestQr();
+        currentBaseUrl = undefined;
+        verifyCode = undefined;
+        await publishQr(qr.qrcode_img_content);
+        break;
       case "verify_code_blocked":
         throw new Error("配对码验证被暂时阻止，请稍后重新登录");
     }

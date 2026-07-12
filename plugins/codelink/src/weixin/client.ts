@@ -16,8 +16,17 @@ export class WeixinApiError extends Error {
     message: string,
     readonly status?: number,
     readonly responseBody?: string,
+    readonly ret?: number,
+    readonly errcode?: number,
   ) {
     super(message);
+  }
+
+  get errorCode(): number | undefined {
+    if (typeof this.ret === "number" && this.ret !== 0) return this.ret;
+    if (typeof this.errcode === "number" && this.errcode !== 0)
+      return this.errcode;
+    return this.status;
   }
 }
 
@@ -103,8 +112,13 @@ export class WeixinClient {
     toUserId: string;
     contextToken: string;
     text: string;
+    clientId?: string;
   }): Promise<void> {
-    const response = await this.request<{ ret?: number; errmsg?: string }>(
+    const response = await this.request<{
+      ret?: number;
+      errcode?: number;
+      errmsg?: string;
+    }>(
       params.session.baseUrl,
       "ilink/bot/sendmessage",
       {
@@ -114,7 +128,7 @@ export class WeixinClient {
           msg: {
             from_user_id: "",
             to_user_id: params.toUserId,
-            client_id: `codelink-${randomUUID()}`,
+            client_id: params.clientId ?? `codelink-${randomUUID()}`,
             message_type: 2,
             message_state: 2,
             context_token: params.contextToken,
@@ -124,9 +138,22 @@ export class WeixinClient {
         }),
       },
     );
-    if (response.ret && response.ret !== 0) {
+    const failedRet = typeof response.ret === "number" && response.ret !== 0;
+    const failedErrcode =
+      typeof response.errcode === "number" && response.errcode !== 0;
+    if (failedRet || failedErrcode) {
+      const codes = [
+        failedRet ? `ret=${response.ret}` : "",
+        failedErrcode ? `errcode=${response.errcode}` : "",
+      ]
+        .filter(Boolean)
+        .join(" ");
       throw new WeixinApiError(
-        `sendmessage ret=${response.ret}: ${response.errmsg ?? "unknown error"}`,
+        `sendmessage ${codes}: ${response.errmsg ?? "unknown error"}`,
+        undefined,
+        JSON.stringify(response),
+        response.ret,
+        response.errcode,
       );
     }
   }

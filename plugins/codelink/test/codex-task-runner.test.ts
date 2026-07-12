@@ -83,6 +83,63 @@ describe("CodexTaskRunner", () => {
     });
   });
 
+  it("binds a new thread as soon as App Server starts it", async () => {
+    const stateDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), "codelink-runner-state-"),
+    );
+    const workspaceRoot = fs.mkdtempSync(
+      path.join(os.tmpdir(), "codelink-runner-work-"),
+    );
+    cleanup.push(stateDir, workspaceRoot);
+    const store = new StateStore(stateDir);
+    const config = {
+      ...defaultConfig().codex,
+      taskWorkspaceRoot: workspaceRoot,
+    };
+    let finishThread!: (value: {
+      threadId: string;
+      finalResponse: string;
+    }) => void;
+    const runNewThread = vi.fn(
+      (options: {
+        onThreadStarted?: (thread: { threadId: string }) => void;
+      }) => {
+        options.onThreadStarted?.({ threadId: "thread-early" });
+        return new Promise<{ threadId: string; finalResponse: string }>(
+          (resolve) => {
+            finishThread = resolve;
+          },
+        );
+      },
+    );
+    const runner = new CodexTaskRunner(config, store, {
+      runNewThread: runNewThread as never,
+      continueThread: vi.fn(),
+    });
+
+    const running = runner.runTask({
+      messageId: "m-early",
+      fromUserId: "owner",
+      prompt: "long new task",
+    });
+
+    await vi.waitFor(() =>
+      expect(store.getConversation("owner")?.threadId).toBe("thread-early"),
+    );
+    expect(store.findTask("m-early")).toMatchObject({
+      status: "running",
+      threadId: "thread-early",
+    });
+    finishThread({
+      threadId: "thread-early",
+      finalResponse: "finished",
+    });
+    await expect(running).resolves.toMatchObject({
+      threadId: "thread-early",
+      conversationIsCurrent: true,
+    });
+  });
+
   it("continues the bound Codex conversation by thread id", async () => {
     const stateDir = fs.mkdtempSync(
       path.join(os.tmpdir(), "codelink-runner-state-"),
@@ -188,5 +245,75 @@ describe("CodexTaskRunner", () => {
     expect(store.getConversation("owner")?.threadId).toBe(
       "newer-desktop-thread",
     );
+  });
+
+  it("does not let an older pending thread bind after an explicit new-conversation generation", async () => {
+    const stateDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), "codelink-runner-state-"),
+    );
+    const workspaceRoot = fs.mkdtempSync(
+      path.join(os.tmpdir(), "codelink-runner-work-"),
+    );
+    cleanup.push(stateDir, workspaceRoot);
+    const store = new StateStore(stateDir);
+    const starts: Array<{
+      onThreadStarted?: (thread: { threadId: string }) => void;
+      finish: (result: { threadId: string; finalResponse: string }) => void;
+    }> = [];
+    const runNewThread = vi.fn(
+      (options: {
+        onThreadStarted?: (thread: { threadId: string }) => void;
+      }) =>
+        new Promise<{ threadId: string; finalResponse: string }>((resolve) => {
+          starts.push({ onThreadStarted: options.onThreadStarted, finish: resolve });
+        }),
+    );
+    const runner = new CodexTaskRunner(
+      { ...defaultConfig().codex, taskWorkspaceRoot: workspaceRoot },
+      store,
+      { runNewThread: runNewThread as never, continueThread: vi.fn() },
+    );
+    const firstSnapshot = store.getConversationSnapshot("owner");
+    const first = runner.runTask({
+      messageId: "generation-old",
+      fromUserId: "owner",
+      prompt: "old pending request",
+      conversationAtReceipt: firstSnapshot.binding,
+      conversationGenerationAtReceipt: firstSnapshot.generation,
+    });
+    await vi.waitFor(() => expect(starts).toHaveLength(1));
+
+    store.clearConversation("owner");
+    const secondSnapshot = store.getConversationSnapshot("owner");
+    const second = runner.runTask({
+      messageId: "generation-new",
+      fromUserId: "owner",
+      prompt: "explicit new request",
+      startNew: true,
+      conversationAtReceipt: secondSnapshot.binding,
+      conversationGenerationAtReceipt: secondSnapshot.generation,
+    });
+    await vi.waitFor(() => expect(starts).toHaveLength(2));
+
+    starts[0]?.onThreadStarted?.({ threadId: "stale-thread" });
+    expect(store.getConversation("owner")).toBeNull();
+    starts[1]?.onThreadStarted?.({ threadId: "fresh-thread" });
+    expect(store.getConversation("owner")?.threadId).toBe("fresh-thread");
+    starts[0]?.finish({
+      threadId: "stale-thread",
+      finalResponse: "stale finished",
+    });
+    starts[1]?.finish({
+      threadId: "fresh-thread",
+      finalResponse: "fresh finished",
+    });
+
+    await expect(first).resolves.toMatchObject({
+      conversationIsCurrent: false,
+    });
+    await expect(second).resolves.toMatchObject({
+      conversationIsCurrent: true,
+    });
+    expect(store.getConversation("owner")?.threadId).toBe("fresh-thread");
   });
 });

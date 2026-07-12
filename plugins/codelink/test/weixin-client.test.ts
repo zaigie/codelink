@@ -83,6 +83,7 @@ describe("WeixinClient", () => {
       toUserId: "owner",
       contextToken: "ctx",
       text: "done",
+      clientId: "stable-chunk-id",
     });
 
     const [, init] = fetchMock.mock.calls[0];
@@ -93,8 +94,38 @@ describe("WeixinClient", () => {
       message_type: 2,
       message_state: 2,
       context_token: "ctx",
+      client_id: "stable-chunk-id",
     });
     expect(body.msg.item_list[0].text_item.text).toBe("done");
     expect(body.base_info.bot_agent).toBe("CodeLink/0.1.0");
+  });
+
+  it("preserves sendmessage ret and errcode on the thrown error", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({ ret: -2, errcode: -14, errmsg: "busy" }),
+        { status: 200 },
+      ),
+    );
+    const client = new WeixinClient(defaultConfig().weixin, fetchMock);
+
+    const sending = client.sendText({
+      session: {
+        accountId: "bot",
+        token: "token",
+        userId: "owner",
+        baseUrl: "https://ilinkai.weixin.qq.com",
+        savedAt: "now",
+      },
+      toUserId: "owner",
+      contextToken: "ctx",
+      text: "done",
+    });
+
+    await expect(sending).rejects.toMatchObject({
+      ret: -2,
+      errcode: -14,
+      errorCode: -2,
+    });
   });
 });

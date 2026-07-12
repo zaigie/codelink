@@ -16,6 +16,8 @@
   <dict>
     <key>CODELINK_STATE_DIR</key>
     <string>__STATE_DIR__</string>
+    <key>CODELINK_CODEX_BIN</key>
+    <string>__CODEX_BIN__</string>
   </dict>
   <key>RunAtLoad</key>
   <true/>

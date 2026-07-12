@@ -30,7 +30,7 @@ MCP 只访问 `http://127.0.0.1:18791`，不会获得微信 bot token。
   → 发送带固定尾注的通知
 ```
 
-CodeLink 只持久化 thread ID；完整对话历史仍由 Codex 管理。新建会话才创建 `~/Documents/Codex/CodeLink/<date>/...` 工作目录并注入 CodeLink developer instructions。恢复已有桌面任务时，只提交 `threadId` 和用户输入，不覆盖原任务的 cwd、模型、sandbox、approval policy 或 developer instructions。
+CodeLink 只持久化会话路由所需的 thread ID；完整对话历史仍由 Codex 管理。新建会话才创建 `~/Documents/Codex/CodeLink/<date>/...` 工作目录并注入 CodeLink developer instructions。恢复已有桌面任务时，只提交 `threadId` 和用户输入，不覆盖原任务的 cwd、模型、sandbox、approval policy 或 developer instructions。
 
 ## 新会话意图
 
@@ -55,9 +55,36 @@ daemon 在回复“已收到”之前记录消息到达时的绑定，保证这�
 
 通知发送失败时同样按绑定版本做条件恢复，因此较早失败的通知不会回滚掉较晚成功的同 thread 通知。这些保证针对单个常驻 daemon 进程；同一状态目录不支持多个 daemon 同时写入。
 
+长任务不会阻塞微信长轮询。daemon 先把完整恢复请求以私有 `accepted` 记录写入，再提交 `get_updates_buf`，随后在后台执行；确认消息投递失败不会阻止 Codex。首个新 thread 尚未返回 ID 时，同一用户的后续消息只等待“路由建立”而不等待整个任务，拿到 ID 后即可通过 `turn/steer` 进入活动 turn。同一批更新里的连续消息也遵循这条规则。
+
+会话状态另有单调 generation。即使当前没有 thread，显式 `/new` 也会推进 generation，因此更早的异步 `thread/start` 不能在稍后抢回绑定。
+
+重启恢复采用保守语义：尚未开始的 `accepted` 请求可以重放；已经进入 `running` 的请求不会盲目重放，以免重复文件修改或外部副作用，而是标记中断并通知用户重新发送或继续已知 thread。终态后会清除完整请求正文，只保留预览。
+
+## 微信投递与持久化 outbox
+
+所有文本发送统一经过 `WeixinTextDelivery`：按 UTF-8 2048 字节限制切块，优先段落、换行和完整 Markdown fence/list item；整条消息全局串行；chunk 间节流；`ret=-2` 只做有限退避。每个 chunk 使用稳定 `client_id`，同一次重试以及 daemon 在 pending outbox 上的重启恢复都会复用相同 ID。
+
+任务执行状态与微信投递状态分别记录。Codex 成功但微信失败时，任务仍为 `completed`，投递记录单独为 `failed`。最终消息在执行提交前先以完整 payload 写入私有 outbox；投递成功后移除 payload。`/tasks` 只返回预览和投递摘要，不暴露恢复正文、outbox 文本或稳定键。
+
+## App Server 可靠性
+
+每次运行严格筛选目标 `threadId + turnId` 的通知；RPC 和整个 turn 分别有 30 秒与 30 分钟上限。若完成通知缺少 `final_answer`，只通过官方 `thread/read(includeTurns: true)` 读取目标 turn。任何需要客户端响应的审批或交互 server request 都会立即明确失败，不会静默挂起。后台安装优先固定官方原生 Codex 路径，前台 Windows 运行也能解析 `codex.cmd`/`.bat` shim。
+
 ## 独立登录
 
-默认登录直接调用腾讯 iLink 二维码接口。空 CodeLink 状态使用空 `local_token_list`，不读取 `~/.openclaw`。OpenClaw 导入导出只用于用户明确要求保留既有 Bot 身份的可选迁移。
+默认登录直接调用腾讯 iLink 二维码接口。空 CodeLink 状态使用空 `local_token_list`，不读取 `~/.openclaw`。二维码过期时在同一登录超时窗口内自动获取新码、重写 PNG 并再次触发展示回调。OpenClaw 导入导出只用于用户明确要求保留既有 Bot 身份的可选迁移。
+
+## 跨平台运行与常驻
+
+daemon、MCP 和状态存储只使用 Node.js API 与纯 JavaScript 依赖，不依赖 macOS framework 或本机编译扩展。平台差异收敛在安装层：
+
+- macOS 用 LaunchAgent；
+- Linux 用 systemd user service；
+- Windows 用当前用户 Scheduled Task；
+- 不具备上述服务管理器时，daemon 仍可由其他进程管理器前台启动。
+
+统一安装器根据 `process.platform/process.arch` 匹配官方 Codex 的 x64/arm64 target，并解析 npm wrapper 后面的原生 `codex`/`codex.exe`。Node 与 Codex 的绝对路径会写进服务环境，避免后台会话与交互式 shell 的 PATH 不一致。当前未承诺的架构是官方 Codex 没有对应原生 target 的组合，而不是 CodeLink 主动限制操作系统。
 
 ## HITL
 

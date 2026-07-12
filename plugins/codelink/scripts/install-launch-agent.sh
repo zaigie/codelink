@@ -3,7 +3,8 @@ set -eu
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 PLUGIN_DIR=$(dirname "$SCRIPT_DIR")
-NODE_BIN=$(command -v node)
+NODE_BIN="${CODELINK_NODE_BIN:-$(command -v node)}"
+CODEX_BIN="${CODELINK_CODEX_BIN:-$(command -v codex)}"
 LABEL="ai.codelink.daemon"
 PLIST_DIR="$HOME/Library/LaunchAgents"
 PLIST_PATH="$PLIST_DIR/$LABEL.plist"
@@ -17,14 +18,17 @@ rm -f "$RUNTIME_DIR/cli.js" "$RUNTIME_DIR/cli.mjs" "$RUNTIME_DIR/cli.cjs"
 cp "$PLUGIN_DIR/dist/cli.cjs" "$RUNTIME_CLI"
 chmod 700 "$RUNTIME_CLI"
 
-sed \
-  -e "s|__LABEL__|$LABEL|g" \
-  -e "s|__NODE_BIN__|$NODE_BIN|g" \
-  -e "s|__CLI_PATH__|$RUNTIME_CLI|g" \
-  -e "s|__WORKDIR__|$RUNTIME_DIR|g" \
-  -e "s|__LOG_DIR__|$LOG_DIR|g" \
-  -e "s|__STATE_DIR__|$LOG_DIR|g" \
-  "$PLUGIN_DIR/scripts/launch-agent.plist.template" > "$PLIST_PATH"
+"$NODE_BIN" "$SCRIPT_DIR/render-launch-agent.mjs" \
+  "$PLUGIN_DIR/scripts/launch-agent.plist.template" \
+  "$PLIST_PATH" \
+  "$LABEL" \
+  "$NODE_BIN" \
+  "$CODEX_BIN" \
+  "$RUNTIME_CLI" \
+  "$RUNTIME_DIR" \
+  "$LOG_DIR" \
+  "$LOG_DIR"
+chmod 600 "$PLIST_PATH"
 
 launchctl bootout "gui/$(id -u)/$LABEL" >/dev/null 2>&1 || true
 

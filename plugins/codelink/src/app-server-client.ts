@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import path from "node:path";
 import { spawn, ChildProcessWithoutNullStreams } from "node:child_process";
 import readline from "node:readline";
 
@@ -11,12 +12,22 @@ export type AppServerRunOptions = {
   networkAccessEnabled: boolean;
   model?: string;
   developerInstructions?: string;
+  onThreadStarted?: (thread: { threadId: string; cwd?: string }) => void;
 };
 
 export type AppServerRunResult = {
   threadId: string;
+  /** Present for the stdio adapter; optional for lightweight test adapters. */
+  turnId?: string;
   finalResponse: string;
   cwd?: string;
+};
+
+export type StdioAppServerRunResult = AppServerRunResult & { turnId: string };
+
+export type StdioCodexAppServerOptions = {
+  requestTimeoutMs?: number;
+  turnTimeoutMs?: number;
 };
 
 export interface CodexAppServer {
@@ -32,7 +43,7 @@ export interface CodexAppServer {
 }
 
 type RpcResponse = {
-  id?: number;
+  id?: number | string;
   result?: unknown;
   error?: { code?: number; message?: string };
   method?: string;
@@ -44,13 +55,35 @@ type PendingRequest = {
   reject(error: Error): void;
 };
 
+type TurnCompletion = {
+  finalResponse: string;
+  fallbackResponse: string;
+};
+
 export class StdioCodexAppServer implements CodexAppServer {
-  constructor(private readonly codexBin = resolveCodexBin()) {}
+  private readonly requestTimeoutMs: number;
+  private readonly turnTimeoutMs: number;
+
+  constructor(
+    private readonly codexBin = resolveCodexBin(),
+    options: StdioCodexAppServerOptions = {},
+  ) {
+    this.requestTimeoutMs = normalizeTimeout(
+      options.requestTimeoutMs,
+      30_000,
+      "requestTimeoutMs",
+    );
+    this.turnTimeoutMs = normalizeTimeout(
+      options.turnTimeoutMs,
+      30 * 60_000,
+      "turnTimeoutMs",
+    );
+  }
 
   async runNewThread(
     options: AppServerRunOptions,
     prompt: string,
-  ): Promise<AppServerRunResult> {
+  ): Promise<StdioAppServerRunResult> {
     return this.run(options, prompt);
   }
 
@@ -58,7 +91,7 @@ export class StdioCodexAppServer implements CodexAppServer {
     options: AppServerRunOptions,
     threadId: string,
     prompt: string,
-  ): Promise<AppServerRunResult> {
+  ): Promise<StdioAppServerRunResult> {
     return this.run(options, prompt, threadId);
   }
 
@@ -66,13 +99,28 @@ export class StdioCodexAppServer implements CodexAppServer {
     options: AppServerRunOptions,
     prompt: string,
     existingThreadId?: string,
-  ): Promise<AppServerRunResult> {
-    const child = spawn(this.codexBin, ["app-server", "--listen", "stdio://"], {
-      cwd: options.cwd,
-      env: process.env,
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-    const session = new AppServerSession(child);
+  ): Promise<StdioAppServerRunResult> {
+    const usesShellShim = /\.(?:cmd|bat)$/i.test(this.codexBin);
+    const executable = usesShellShim
+      ? `"${this.codexBin.replaceAll('"', '\\"')}"`
+      : this.codexBin;
+    const child = usesShellShim
+      ? spawn(`${executable} app-server --listen stdio://`, {
+          cwd: options.cwd,
+          env: process.env,
+          stdio: ["pipe", "pipe", "pipe"],
+          shell: true,
+        })
+      : spawn(executable, ["app-server", "--listen", "stdio://"], {
+          cwd: options.cwd,
+          env: process.env,
+          stdio: ["pipe", "pipe", "pipe"],
+        });
+    const session = new AppServerSession(
+      child,
+      this.requestTimeoutMs,
+      this.turnTimeoutMs,
+    );
 
     try {
       await session.request("initialize", {
@@ -118,6 +166,12 @@ export class StdioCodexAppServer implements CodexAppServer {
       };
       const threadId = threadResponse.thread?.id;
       if (!threadId) throw new Error("Codex App Server 未返回 thread id");
+      options.onThreadStarted?.({
+        threadId,
+        ...(threadResponse.thread?.cwd
+          ? { cwd: threadResponse.thread.cwd }
+          : {}),
+      });
 
       const completion = session.waitForTurn(threadId);
       const input = [{ type: "text", text: prompt, text_elements: [] }];
@@ -127,14 +181,16 @@ export class StdioCodexAppServer implements CodexAppServer {
             .reverse()
             .find((turn) => turn.status === "inProgress" && turn.id)
         : undefined;
+      let turnId: string | undefined;
       if (activeTurn?.id) {
-        await session.request("turn/steer", {
+        const turnResponse = (await session.request("turn/steer", {
           threadId,
           expectedTurnId: activeTurn.id,
           input,
-        });
+        })) as { turnId?: string };
+        turnId = turnResponse.turnId;
       } else {
-        await session.request("turn/start", {
+        const turnResponse = (await session.request("turn/start", {
           threadId,
           ...(!existingThreadId
             ? {
@@ -145,12 +201,28 @@ export class StdioCodexAppServer implements CodexAppServer {
               }
             : {}),
           input,
-        });
+        })) as { turn?: { id?: string } };
+        turnId = turnResponse.turn?.id;
       }
+      if (!turnId) throw new Error("Codex App Server 未返回 turn id");
+      session.selectTurn(turnId);
 
-      const finalResponse = await completion;
+      const turnCompletion = await completion;
+      let finalResponse = turnCompletion.finalResponse;
+      if (!finalResponse) {
+        const threadReadResponse = await session.request("thread/read", {
+          threadId,
+          includeTurns: true,
+        });
+        finalResponse = finalResponseFromThreadRead(
+          threadReadResponse,
+          turnId,
+        );
+      }
+      if (!finalResponse) finalResponse = turnCompletion.fallbackResponse;
       return {
         threadId,
+        turnId,
         finalResponse,
         ...(threadResponse.thread?.cwd
           ? { cwd: threadResponse.thread.cwd }
@@ -166,14 +238,22 @@ class AppServerSession {
   private nextId = 1;
   private readonly pending = new Map<number, PendingRequest>();
   private turnThreadId?: string;
-  private turnResolve?: (value: string) => void;
+  private turnId?: string;
+  private turnResolve?: (value: TurnCompletion) => void;
   private turnReject?: (error: Error) => void;
+  private turnTimer?: NodeJS.Timeout;
+  private turnSettled = false;
+  private queuedTurnMessages: RpcResponse[] = [];
   private finalMessages: string[] = [];
   private fallbackMessages: string[] = [];
   private stderr = "";
   private closed = false;
 
-  constructor(private readonly child: ChildProcessWithoutNullStreams) {
+  constructor(
+    private readonly child: ChildProcessWithoutNullStreams,
+    private readonly requestTimeoutMs: number,
+    private readonly turnTimeoutMs: number,
+  ) {
     const lines = readline.createInterface({ input: child.stdout });
     lines.on("line", (line) => this.onLine(line));
     child.stderr.on("data", (chunk: Buffer) => {
@@ -193,8 +273,31 @@ class AppServerSession {
   request(method: string, params: unknown): Promise<unknown> {
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
-      this.write({ id, method, params });
+      const timer = setTimeout(() => {
+        if (!this.pending.delete(id)) return;
+        reject(
+          new Error(
+            `Codex App Server ${method} 请求超时（${this.requestTimeoutMs}ms）`,
+          ),
+        );
+      }, this.requestTimeoutMs);
+      this.pending.set(id, {
+        resolve(value) {
+          clearTimeout(timer);
+          resolve(value);
+        },
+        reject(error) {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      try {
+        this.write({ id, method, params });
+      } catch (error) {
+        this.pending.delete(id);
+        clearTimeout(timer);
+        reject(error);
+      }
     });
   }
 
@@ -202,12 +305,36 @@ class AppServerSession {
     this.write({ method, params });
   }
 
-  waitForTurn(threadId: string): Promise<string> {
+  waitForTurn(threadId: string): Promise<TurnCompletion> {
     this.turnThreadId = threadId;
     return new Promise((resolve, reject) => {
-      this.turnResolve = resolve;
-      this.turnReject = reject;
+      this.turnResolve = (value) => {
+        if (this.turnSettled) return;
+        this.turnSettled = true;
+        if (this.turnTimer) clearTimeout(this.turnTimer);
+        resolve(value);
+      };
+      this.turnReject = (error) => {
+        if (this.turnSettled) return;
+        this.turnSettled = true;
+        if (this.turnTimer) clearTimeout(this.turnTimer);
+        reject(error);
+      };
     });
+  }
+
+  selectTurn(turnId: string): void {
+    this.turnId = turnId;
+    this.turnTimer = setTimeout(() => {
+      this.turnReject?.(
+        new Error(
+          `Codex App Server ${this.turnThreadId}/${turnId} 执行超时（${this.turnTimeoutMs}ms）`,
+        ),
+      );
+    }, this.turnTimeoutMs);
+    const queued = this.queuedTurnMessages;
+    this.queuedTurnMessages = [];
+    for (const message of queued) this.onMessage(message);
   }
 
   close(): void {
@@ -234,6 +361,34 @@ class AppServerSession {
       return;
     }
 
+    this.onMessage(message);
+  }
+
+  private onMessage(message: RpcResponse): void {
+    if (message.method && message.id !== undefined) {
+      const unsupported = message.method.endsWith("/requestApproval")
+        ? `CodeLink 当前不支持微信审批（${message.method}）`
+        : `CodeLink 当前不支持 Codex 交互请求（${message.method}）`;
+      this.fail(new Error(unsupported));
+      return;
+    }
+
+    if (message.method && message.params) {
+      const params = message.params as Record<string, unknown>;
+      if (params.threadId !== this.turnThreadId) return;
+      const turn = params.turn as { id?: string } | undefined;
+      const messageTurnId =
+        typeof params.turnId === "string" ? params.turnId : turn?.id;
+      if (!messageTurnId) return;
+      if (!this.turnId) {
+        this.queuedTurnMessages.push(message);
+        return;
+      }
+      if (messageTurnId !== this.turnId) return;
+      this.handleTurnMessage(message.method, params);
+      return;
+    }
+
     if (typeof message.id === "number") {
       const pending = this.pending.get(message.id);
       if (!pending) return;
@@ -249,12 +404,13 @@ class AppServerSession {
       }
       return;
     }
+  }
 
-    if (!message.method || !message.params) return;
-    const params = message.params as Record<string, unknown>;
-    if (params.threadId !== this.turnThreadId) return;
-
-    if (message.method === "item/completed") {
+  private handleTurnMessage(
+    method: string,
+    params: Record<string, unknown>,
+  ): void {
+    if (method === "item/completed") {
       const item = params.item as
         | { type?: string; text?: string; phase?: string }
         | undefined;
@@ -264,7 +420,7 @@ class AppServerSession {
       return;
     }
 
-    if (message.method === "turn/completed") {
+    if (method === "turn/completed") {
       const turn = params.turn as
         | { status?: string; error?: { message?: string } | null }
         | undefined;
@@ -274,11 +430,10 @@ class AppServerSession {
         );
         return;
       }
-      const messages =
-        this.finalMessages.length > 0
-          ? this.finalMessages
-          : this.fallbackMessages.slice(-1);
-      this.turnResolve?.(messages.join("\n\n").trim());
+      this.turnResolve?.({
+        finalResponse: this.finalMessages.join("\n\n").trim(),
+        fallbackResponse: this.fallbackMessages.slice(-1).join("\n\n").trim(),
+      });
     }
   }
 
@@ -305,13 +460,82 @@ function sandboxPolicy(options: AppServerRunOptions): Record<string, unknown> {
   };
 }
 
-export function resolveCodexBin(): string {
-  const override = process.env.CODELINK_CODEX_BIN?.trim();
+function finalResponseFromThreadRead(
+  response: unknown,
+  turnId: string,
+): string {
+  const result = response as {
+    thread?: {
+      turns?: Array<{
+        id?: string;
+        items?: Array<{
+          type?: string;
+          text?: string;
+          phase?: string | null;
+        }>;
+      }>;
+    };
+  };
+  const targetTurn = result.thread?.turns?.find((turn) => turn.id === turnId);
+  const messages =
+    targetTurn?.items
+      ?.filter(
+        (item) => item.type === "agentMessage" && Boolean(item.text?.trim()),
+      )
+      .map((item) => ({ text: item.text!.trim(), phase: item.phase })) ?? [];
+  const finalMessages = messages.filter(
+    (message) => message.phase === "final_answer",
+  );
+  return (finalMessages.length > 0 ? finalMessages : messages.slice(-1))
+    .map((message) => message.text)
+    .join("\n\n")
+    .trim();
+}
+
+function normalizeTimeout(
+  value: number | undefined,
+  fallback: number,
+  name: string,
+): number {
+  const timeout = value ?? fallback;
+  if (!Number.isFinite(timeout) || timeout <= 0) {
+    throw new Error(`${name} 必须是大于 0 的有限毫秒数`);
+  }
+  return timeout;
+}
+
+export function resolveCodexBin(options: {
+  platform?: NodeJS.Platform;
+  env?: NodeJS.ProcessEnv;
+  exists?: (candidate: string) => boolean;
+} = {}): string {
+  const platform = options.platform ?? process.platform;
+  const env = options.env ?? process.env;
+  const exists = options.exists ?? fs.existsSync;
+  const override = env.CODELINK_CODEX_BIN?.trim();
   if (override) return override;
 
-  const appBins = [
-    "/Applications/ChatGPT.app/Contents/Resources/codex",
-    "/Applications/Codex.app/Contents/Resources/codex",
-  ];
-  return appBins.find((candidate) => fs.existsSync(candidate)) ?? "codex";
+  if (platform === "darwin") {
+    const appBins = [
+      "/Applications/ChatGPT.app/Contents/Resources/codex",
+      "/Applications/Codex.app/Contents/Resources/codex",
+    ];
+    const appBin = appBins.find((candidate) => exists(candidate));
+    if (appBin) return appBin;
+  }
+
+  const pathApi = platform === "win32" ? path.win32 : path;
+  const directories = (env.PATH || env.Path || "").split(pathApi.delimiter);
+  const names =
+    platform === "win32"
+      ? ["codex.exe", "codex.cmd", "codex.bat", "codex.com"]
+      : ["codex"];
+  for (const directory of directories) {
+    if (!directory) continue;
+    for (const name of names) {
+      const candidate = pathApi.join(directory, name);
+      if (exists(candidate)) return candidate;
+    }
+  }
+  return platform === "win32" ? "codex.cmd" : "codex";
 }
