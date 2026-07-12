@@ -13,6 +13,7 @@ import {
   serviceInstaller,
 } from "../scripts/setup-lib.mjs";
 import { renderLaunchAgent } from "../scripts/render-launch-agent.mjs";
+import { statusIsReady } from "../scripts/setup.mjs";
 
 const hasSh = spawnSync("sh", ["-c", "exit 0"], {
   stdio: "ignore",
@@ -84,6 +85,32 @@ describe("小白安装契约", () => {
     }
     expect(install).toContain("不能只打印文件路径");
     expect(prompt).toContain("不要把图片藏在需要展开的执行过程里");
+  });
+
+  it("通过 CLI status 检查就绪且不把 bearer 放进 argv", () => {
+    let invocation;
+    const ready = statusIsReady("/runtime/cli.cjs", "/private/state", {
+      nodePath: "/runtime/node",
+      env: { HOME: "/home/tester" },
+      spawnSync: (command, args, options) => {
+        invocation = { command, args, options };
+        return { status: 0 };
+      },
+    });
+
+    expect(ready).toBe(true);
+    expect(invocation).toMatchObject({
+      command: "/runtime/node",
+      args: ["/runtime/cli.cjs", "status"],
+      options: {
+        env: {
+          HOME: "/home/tester",
+          CODELINK_STATE_DIR: "/private/state",
+        },
+        stdio: "ignore",
+      },
+    });
+    expect(JSON.stringify(invocation)).not.toMatch(/bearer|daemon-api-token/i);
   });
 });
 

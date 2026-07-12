@@ -1,5 +1,6 @@
-import { createHash } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import http, { IncomingMessage, ServerResponse } from "node:http";
+import { isIP } from "node:net";
 
 import { parseNewConversationIntent } from "./conversation-intent.js";
 import { CodelinkConfig } from "./config.js";
@@ -54,10 +55,15 @@ type MessageIdentity = {
   legacyTaskId?: string;
 };
 
+export type CodelinkDaemonOptions = {
+  authToken?: string;
+};
+
 export class CodelinkDaemon {
   private readonly server: http.Server;
   private readonly delivery: WeixinTextDelivery;
   private readonly typing: WeixinTypingIndicator;
+  private readonly authToken: string;
   private readonly backgroundTasks = new Set<Promise<void>>();
   private readonly pendingThreads = new Map<string, PendingThread>();
   private readonly notificationQueues = new Map<string, Promise<void>>();
@@ -74,15 +80,19 @@ export class CodelinkDaemon {
     private readonly store: StateStore,
     private readonly client: WeixinClient,
     private readonly taskRunner: TaskRunner,
+    options: CodelinkDaemonOptions = {},
   ) {
     this.delivery = new WeixinTextDelivery(client);
     this.typing = new WeixinTypingIndicator(client);
+    this.authToken =
+      options.authToken?.trim() || this.store.getOrCreateDaemonAuthToken();
     this.server = http.createServer((request, response) => {
       void this.handleHttp(request, response);
     });
   }
 
   async start(): Promise<void> {
+    assertLoopbackHost(this.config.daemon.host);
     const session = this.requireSession();
     await new Promise<void>((resolve, reject) => {
       this.server.once("error", reject);
@@ -833,9 +843,23 @@ export class CodelinkDaemon {
     response: ServerResponse,
   ): Promise<void> {
     try {
+      if (!this.isAuthorized(request)) {
+        response.writeHead(401, {
+          "Content-Type": "application/json; charset=utf-8",
+          "WWW-Authenticate": "Bearer",
+        });
+        response.end(JSON.stringify({ ok: false, error: "unauthorized" }));
+        return;
+      }
+      const status = this.getStatus();
       if (request.method === "GET" && request.url === "/health") {
-        const status = this.getStatus();
         return this.json(response, status.ok ? 200 : 503, status);
+      }
+      if (!status.ok) {
+        return this.json(response, 503, {
+          ok: false,
+          error: "daemon not ready",
+        });
       }
       if (request.method === "GET" && request.url?.startsWith("/tasks")) {
         return this.json(response, 200, { tasks: this.getRecentTasks() });
@@ -1017,6 +1041,18 @@ export class CodelinkDaemon {
     });
     response.end(JSON.stringify(value));
   }
+
+  private isAuthorized(request: IncomingMessage): boolean {
+    const authorization = request.headers.authorization;
+    if (!authorization) return false;
+    const match = /^Bearer ([A-Za-z0-9_-]+)$/.exec(authorization);
+    if (!match) return false;
+    const provided = Buffer.from(match[1], "utf8");
+    const expected = Buffer.from(this.authToken, "utf8");
+    return (
+      provided.length === expected.length && timingSafeEqual(provided, expected)
+    );
+  }
 }
 
 async function readJsonBody(
@@ -1094,6 +1130,15 @@ function sameWeixinSession(
     current.userId === expected.userId &&
     current.baseUrl === expected.baseUrl
   );
+}
+
+function assertLoopbackHost(host: string): void {
+  const normalized = host.trim().toLowerCase();
+  if (normalized === "::1" || normalized === "0:0:0:0:0:0:0:1") {
+    return;
+  }
+  if (isIP(normalized) === 4 && normalized.split(".")[0] === "127") return;
+  throw new Error(`CodeLink daemon host must be loopback, received ${host}`);
 }
 
 function previewText(value: string, max = 500): string {

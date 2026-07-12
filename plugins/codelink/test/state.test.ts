@@ -1,12 +1,15 @@
+import { execFile } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { promisify } from "node:util";
 
 import { afterEach, describe, expect, it } from "vitest";
 
 import { StateStore } from "../src/state.js";
 
 const cleanup: string[] = [];
+const execFileAsync = promisify(execFile);
 
 afterEach(() => {
   for (const dir of cleanup.splice(0))
@@ -119,6 +122,38 @@ describe("StateStore", () => {
     expect(
       fs.statSync(store.path("processed-messages.json")).mode & 0o777,
     ).toBe(0o600);
+  });
+
+  it("publishes one private daemon credential across concurrent first use", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "codelink-state-"));
+    cleanup.push(dir);
+    const stateModuleUrl = new URL("../src/state.ts", import.meta.url).href;
+    const script = `
+      import { StateStore } from ${JSON.stringify(stateModuleUrl)};
+      process.stdout.write(new StateStore(process.argv[1]).getOrCreateDaemonAuthToken());
+    `;
+
+    const results = await Promise.all(
+      Array.from({ length: 6 }, () =>
+        execFileAsync(
+          process.execPath,
+          ["--import", "tsx", "--input-type=module", "--eval", script, dir],
+          { cwd: process.cwd() },
+        ),
+      ),
+    );
+    const tokens = results.map(({ stdout }) => stdout.trim());
+
+    expect(new Set(tokens).size).toBe(1);
+    expect(tokens[0]).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    const tokenPath = path.join(dir, "daemon-api-token");
+    expect(fs.readFileSync(tokenPath, "utf8").trim()).toBe(tokens[0]);
+    if (process.platform !== "win32") {
+      expect(fs.statSync(tokenPath).mode & 0o777).toBe(0o600);
+    }
+    expect(
+      fs.readdirSync(dir).filter((name) => name.includes("daemon-api-token.")),
+    ).toEqual([]);
   });
 
   it("persists, replaces, and clears the active Codex conversation per WeChat user", () => {

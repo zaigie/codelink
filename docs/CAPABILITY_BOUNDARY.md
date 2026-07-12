@@ -9,6 +9,7 @@ CodeLink 当前的核心能力是：为每个授权微信用户维护一个“�
 - CodeLink 可以在空状态目录中直接请求腾讯 iLink 二维码并完成登录；
 - 不需要安装、运行或部署 OpenClaw，也不需要复制其 session；
 - 微信凭证只保存在当前用户的 `~/.codelink`；Unix 文件使用 `0600`，Windows 使用用户配置目录继承的 ACL。
+- 本地 daemon bearer 同样只保存在 CodeLink 状态目录；Unix 首次创建使用 `0600`，Windows 继承用户目录 ACL。
 
 ### 当前会话
 
@@ -70,7 +71,8 @@ CodeLink 新建的微信会话会保存到本机 Codex 存储并返回 thread ID
 - 微信新建的会话使用生成工作目录；绑定的桌面任务保持原项目、上下文和设置；
 - 核心运行时面向官方 Codex 与 Node.js 22 覆盖的 macOS、Linux、Windows x64/arm64；macOS 已实机运行，Linux/Windows 安装器仍待对应系统首轮实机回归；
 - 自动常驻分别使用 macOS LaunchAgent、Linux systemd user service 和 Windows 当前用户 Scheduled Task；非 systemd Linux 需要用户已有的进程管理器；
-- 本地 daemon API 只应监听 loopback 地址。
+- 本地 daemon API 强制监听 literal loopback IP，并要求同一安装实例的 bearer；缺失或错误凭证返回 `401`。
+- daemon 仅在微信轮询成功后就绪；初始状态或轮询错误期间，已认证业务请求返回 `503`。
 - 未授权微信消息不会保存上下文或 replay 状态，拒绝日志不包含用户 ID 或 token。
 
 ## 验收标准
@@ -84,6 +86,7 @@ CodeLink 新建的微信会话会保存到本机 Codex 存储并返回 thread ID
 7. 较早任务在新绑定之后完成时，不会把当前会话切回去；
 8. daemon 重启后仍能从保存的 thread ID 继续；
 9. 长任务显示临时“正在输入”，普通最终回复不暴露内部 ID 或运行标签；
-10. MCP 和日志不暴露 bot token、context token 或 typing ticket。
+10. MCP 和日志不暴露 bot token、context token、typing ticket 或 daemon bearer；
+11. 未认证本地请求返回 `401`，非就绪业务请求返回 `503`，成功轮询后恢复。
 
 微信新建会话是否出现在 Codex App 侧栏不作为验收项。

@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -73,6 +74,7 @@ type ProcessedMessageState = {
 };
 
 const MAX_PROCESSED_MESSAGE_IDS = 5_000;
+const DAEMON_AUTH_TOKEN_FILE = "daemon-api-token";
 
 export class StateStore {
   readonly dir: string;
@@ -121,6 +123,54 @@ export class StateStore {
 
   saveSyncCursor(cursor: string): void {
     this.writeJson("get-updates.json", { get_updates_buf: cursor }, 0o600);
+  }
+
+  loadDaemonAuthToken(): string | null {
+    this.ensure();
+    try {
+      const token = fs
+        .readFileSync(this.path(DAEMON_AUTH_TOKEN_FILE), "utf8")
+        .trim();
+      if (!token) throw new Error("daemon API credential file is empty");
+      return token;
+    } catch (error) {
+      if (isNodeError(error) && error.code === "ENOENT") return null;
+      throw error;
+    }
+  }
+
+  getOrCreateDaemonAuthToken(): string {
+    const existing = this.loadDaemonAuthToken();
+    if (existing) return existing;
+
+    const token = randomBytes(32).toString("base64url");
+    const destination = this.path(DAEMON_AUTH_TOKEN_FILE);
+    const temporary = this.path(
+      `${DAEMON_AUTH_TOKEN_FILE}.${process.pid}.${randomBytes(8).toString("hex")}.tmp`,
+    );
+    fs.writeFileSync(temporary, `${token}\n`, {
+      encoding: "utf8",
+      flag: "wx",
+      mode: 0o600,
+    });
+    try {
+      try {
+        fs.linkSync(temporary, destination);
+        try {
+          fs.chmodSync(destination, 0o600);
+        } catch {
+          // Windows relies on the user's state-directory ACL.
+        }
+        return token;
+      } catch (error) {
+        if (!isNodeError(error) || error.code !== "EEXIST") throw error;
+        const winner = this.loadDaemonAuthToken();
+        if (!winner) throw new Error("daemon API credential creation lost");
+        return winner;
+      }
+    } finally {
+      fs.rmSync(temporary, { force: true });
+    }
   }
 
   hasProcessedMessage(messageId: string): boolean {
@@ -392,4 +442,8 @@ function nextConversationUpdatedAt(
     ? Math.max(Date.now(), previous + 1)
     : Date.now();
   return new Date(timestamp).toISOString();
+}
+
+function isNodeError(error: unknown): error is NodeJS.ErrnoException {
+  return error instanceof Error && "code" in error;
 }

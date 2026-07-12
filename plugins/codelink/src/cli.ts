@@ -39,11 +39,13 @@ async function main(): Promise<void> {
       return;
     }
     case "status": {
-      printJson(await new DaemonClient().status());
+      const status = await new DaemonClient({ store }).status();
+      printJson(status);
+      if (!daemonStatusIsReady(status)) process.exitCode = 1;
       return;
     }
     case "tasks": {
-      printJson(await new DaemonClient().recentTasks());
+      printJson(await new DaemonClient({ store }).recentTasks());
       return;
     }
     case "task": {
@@ -63,7 +65,7 @@ async function main(): Promise<void> {
     case "send": {
       const text = args.join(" ").trim();
       if (!text) throw new Error("用法：codelink send <消息文字>");
-      printJson(await new DaemonClient().send({ text }));
+      printJson(await new DaemonClient({ store }).send({ text }));
       return;
     }
     case "state": {
@@ -71,6 +73,7 @@ async function main(): Promise<void> {
         stateDir: store.dir,
         config: store.path("config.json"),
         session: store.path("weixin-session.json"),
+        daemonAuthToken: store.path("daemon-api-token"),
         syncCursor: store.path("get-updates.json"),
         processedMessages: store.path("processed-messages.json"),
         contextTokens: store.path("context-tokens.json"),
@@ -128,6 +131,15 @@ function ensureConfig(store: StateStore): void {
 
 function printJson(value: unknown): void {
   process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
+}
+
+function daemonStatusIsReady(value: unknown): boolean {
+  return Boolean(
+    value &&
+      typeof value === "object" &&
+      "ok" in value &&
+      (value as { ok?: unknown }).ok === true,
+  );
 }
 
 function helpText(): string {

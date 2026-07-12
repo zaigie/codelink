@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 
 import fs from "node:fs";
-import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -31,29 +30,25 @@ function run(command, args, options = {}) {
   }
 }
 
-async function waitForHealth(port = 18791, attempts = 50) {
+async function waitForHealth(cliPath, stateDir, attempts = 50) {
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
-    if (await healthIsReady(port)) return;
+    if (statusIsReady(cliPath, stateDir)) return;
     await new Promise((resolve) => setTimeout(resolve, 1000));
   }
   throw new Error("后台服务未就绪。请按 INSTALL.md 中对应系统的方式检查日志。");
 }
 
-function healthIsReady(port) {
-  return new Promise((resolve) => {
-    const request = http.get(
-      { host: "127.0.0.1", port, path: "/health", timeout: 1000 },
-      (response) => {
-        response.resume();
-        resolve(Boolean(response.statusCode && response.statusCode < 400));
-      },
-    );
-    request.on("error", () => resolve(false));
-    request.on("timeout", () => {
-      request.destroy();
-      resolve(false);
-    });
+export function statusIsReady(cliPath, stateDir, options = {}) {
+  const spawn = options.spawnSync ?? spawnSync;
+  const result = spawn(options.nodePath ?? process.execPath, [cliPath, "status"], {
+    cwd: path.dirname(cliPath),
+    env: {
+      ...(options.env ?? process.env),
+      CODELINK_STATE_DIR: stateDir,
+    },
+    stdio: "ignore",
   });
+  return !result.error && result.status === 0;
 }
 
 function helpText() {
@@ -119,6 +114,7 @@ export async function main(args = process.argv.slice(2)) {
     process.env.CODELINK_STATE_DIR?.trim() ||
     path.join(os.homedir(), ".codelink");
   const sessionPath = path.join(stateDir, "weixin-session.json");
+  const runtimeCli = path.join(PLUGIN_DIR, "dist", "cli.cjs");
   process.stdout.write("[3/5] 登录微信\n");
   if (!options.login) {
     process.stdout.write("已按 --no-login 跳过。\n");
@@ -127,7 +123,7 @@ export async function main(args = process.argv.slice(2)) {
       "检测到已有 CodeLink 微信会话，跳过扫码；需要换号时运行 codelink login。\n",
     );
   } else {
-    run(process.execPath, [path.join(PLUGIN_DIR, "dist", "cli.cjs"), "login"], {
+    run(process.execPath, [runtimeCli, "login"], {
       cwd: PLUGIN_DIR,
     });
   }
@@ -153,7 +149,7 @@ export async function main(args = process.argv.slice(2)) {
   }
 
   process.stdout.write("[5/5] 验证后台服务\n");
-  if (options.service) await waitForHealth();
+  if (options.service) await waitForHealth(runtimeCli, stateDir);
   else process.stdout.write("未注册服务，跳过健康检查。\n");
 
   process.stdout.write(
