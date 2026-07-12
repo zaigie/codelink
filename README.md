@@ -1,3 +1,5 @@
+![CodeLink — Codex 与微信之间的桥梁](assets/codelink_banner.png)
+
 # CodeLink
 
 在微信里继续 Codex，也让任意 Codex 任务主动找你。CodeLink 不安装、不运行、也不依赖 OpenClaw。
