@@ -6884,6 +6884,10 @@ var require_dist = __commonJS({
   }
 });
 
+// src/mcp.ts
+import path from "node:path";
+import { pathToFileURL } from "node:url";
+
 // node_modules/zod/v3/helpers/util.js
 var util;
 (function(util2) {
@@ -30199,10 +30203,6 @@ var StdioServerTransport = class {
     });
   }
 };
-
-// src/mcp.ts
-import path from "node:path";
-import { pathToFileURL } from "node:url";
 
 // src/daemon-client.ts
 var DaemonClient = class {

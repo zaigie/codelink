@@ -5766,7 +5766,7 @@ var StdioCodexAppServer = class {
         ...threadResponse.thread?.cwd ? { cwd: threadResponse.thread.cwd } : {}
       };
     } finally {
-      session.close();
+      await session.close();
     }
   }
 };
@@ -5867,14 +5867,31 @@ ${this.stderr}` : ""}`
     this.queuedTurnMessages = [];
     for (const message of queued) this.onMessage(message);
   }
-  close() {
+  async close() {
     if (this.closed) return;
     this.closed = true;
-    this.child.stdin.end();
-    const forceClose = setTimeout(() => {
-      if (this.child.exitCode === null) this.child.kill("SIGTERM");
-    }, 1e3);
-    forceClose.unref();
+    if (this.child.exitCode !== null || this.child.signalCode !== null) return;
+    await new Promise((resolve) => {
+      let forceClose;
+      let closeDeadline;
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        if (forceClose) clearTimeout(forceClose);
+        if (closeDeadline) clearTimeout(closeDeadline);
+        this.child.off("close", finish);
+        this.child.off("error", finish);
+        resolve();
+      };
+      this.child.once("close", finish);
+      this.child.once("error", finish);
+      this.child.stdin.end();
+      forceClose = setTimeout(() => {
+        if (this.child.exitCode === null) this.child.kill("SIGTERM");
+      }, 1e3);
+      closeDeadline = setTimeout(finish, 2e3);
+    });
   }
   write(message) {
     if (!this.child.stdin.writable)

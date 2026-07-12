@@ -425,5 +425,5 @@ describe("安装脚本语法", () => {
       expect(result.stderr).toBe("");
       expect(result.status).toBe(0);
     }
-  });
+  }, 20_000);
 });

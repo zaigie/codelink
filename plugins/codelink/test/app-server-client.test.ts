@@ -41,7 +41,12 @@ function writeFakeCodexCmd(dir: string, source: string): string {
 
 afterEach(() => {
   for (const dir of cleanup.splice(0))
-    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(dir, {
+      recursive: true,
+      force: true,
+      maxRetries: process.platform === "win32" ? 5 : 0,
+      retryDelay: 50,
+    });
   vi.clearAllMocks();
 });
 

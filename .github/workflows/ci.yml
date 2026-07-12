@@ -29,6 +29,12 @@ jobs:
           cache-dependency-path: plugins/codelink/package-lock.json
       - run: npm install --global npm@10.9.8
       - run: npm ci --no-audit --no-fund
+      - name: Check installer ESM syntax on Windows
+        if: runner.os == 'Windows'
+        run: |
+          node --check test/setup-platform.test.mjs
+          node --check scripts/setup-lib.mjs
+          node --check scripts/render-launch-agent.mjs
       - run: npm test
       - run: npm run typecheck
       - run: npm run build
