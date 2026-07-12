@@ -235,6 +235,34 @@ export class StateStore {
     return true;
   }
 
+  replaceConversationSnapshotIfUnchanged(
+    userId: string,
+    expected: ConversationSnapshot,
+    replacement: ConversationSnapshot,
+  ): boolean {
+    const state = this.loadConversationState();
+    const current = state.conversations[userId] ?? null;
+    const currentGeneration = state.generations[userId] ?? 0;
+    if (
+      currentGeneration !== expected.generation ||
+      !sameConversationBinding(current, expected.binding)
+    ) {
+      return false;
+    }
+    if (replacement.binding) {
+      state.conversations[userId] = { ...replacement.binding };
+    } else {
+      delete state.conversations[userId];
+    }
+    if (replacement.generation === 0) {
+      delete state.generations[userId];
+    } else {
+      state.generations[userId] = replacement.generation;
+    }
+    this.writeJson("conversations.json", state, 0o600);
+    return true;
+  }
+
   clearConversation(userId: string): void {
     const state = this.loadConversationState();
     delete state.conversations[userId];

@@ -143,7 +143,7 @@ describe("WeixinTextDelivery", () => {
     expect(receipt.sentChunks).toBe(receipt.totalChunks);
   });
 
-  it("serializes complete deliveries globally across instances", async () => {
+  it("serializes complete deliveries for one recipient across instances", async () => {
     let releaseFirst!: () => void;
     const firstPending = new Promise<void>((resolve) => {
       releaseFirst = resolve;
@@ -176,6 +176,42 @@ describe("WeixinTextDelivery", () => {
       "first",
       "second",
     ]);
+  });
+
+  it("allows deliveries for different recipients to run in parallel", async () => {
+    let releaseOwner!: () => void;
+    let releaseTeammate!: () => void;
+    const ownerPending = new Promise<void>((resolve) => {
+      releaseOwner = resolve;
+    });
+    const teammatePending = new Promise<void>((resolve) => {
+      releaseTeammate = resolve;
+    });
+    const sendText = vi.fn<WeixinTextSender["sendText"]>(
+      async ({ toUserId }) =>
+        toUserId === "owner" ? ownerPending : teammatePending,
+    );
+    const delivery = new WeixinTextDelivery({ sendText });
+
+    const owner = delivery.sendText({
+      session,
+      toUserId: "owner",
+      contextToken: "ctx-owner",
+      text: "owner update",
+    });
+    const teammate = delivery.sendText({
+      session,
+      toUserId: "teammate",
+      contextToken: "ctx-teammate",
+      text: "teammate update",
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const callsWhileBothPending = sendText.mock.calls.length;
+
+    releaseOwner();
+    releaseTeammate();
+    await Promise.all([owner, teammate]);
+    expect(callsWhileBothPending).toBe(2);
   });
 
   it("uses the injected delay only between chunks", async () => {

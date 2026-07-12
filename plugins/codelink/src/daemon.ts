@@ -60,6 +60,7 @@ export class CodelinkDaemon {
   private readonly typing: WeixinTypingIndicator;
   private readonly backgroundTasks = new Set<Promise<void>>();
   private readonly pendingThreads = new Map<string, PendingThread>();
+  private readonly notificationQueues = new Map<string, Promise<void>>();
   private stopping = false;
   private pollingStartedAt?: string;
   private lastPollSuccessAt?: string;
@@ -925,59 +926,83 @@ export class CodelinkDaemon {
     conversationBound: boolean;
     threadId?: string;
   }> {
-    const session = this.requireSession();
-    const toUserId = explicitUserId || session.userId;
+    const sessionAtEnqueue = { ...this.requireSession() };
+    const toUserId = explicitUserId || sessionAtEnqueue.userId;
     if (!toUserId)
       throw new Error("没有默认微信用户；请先扫码登录并从微信发送一条消息");
-    const allowed = new Set(
-      this.config.security.allowedUserIds.length
-        ? this.config.security.allowedUserIds
-        : ([session.userId].filter(Boolean) as string[]),
-    );
-    if (!allowed.has(toUserId))
-      throw new Error(`用户 ${toUserId} 不在 allowedUserIds 中`);
-    const context = this.store.getContextToken(toUserId);
-    if (!context)
-      throw new Error(
-        "没有可用的 context_token；请先从目标微信账号向 CodeLink 发送一条消息",
+    return this.enqueueNotification(toUserId, async () => {
+      const session = this.requireSession();
+      if (!sameWeixinSession(session, sessionAtEnqueue)) {
+        throw new Error("微信会话已在通知排队期间发生变化，请重试");
+      }
+      const allowed = new Set(
+        this.config.security.allowedUserIds.length
+          ? this.config.security.allowedUserIds
+          : ([session.userId].filter(Boolean) as string[]),
       );
-    const threadId = isCodexThreadId(requestedThreadId)
-      ? requestedThreadId
-      : undefined;
-    const previousBinding = this.store.getConversation(toUserId);
-    if (threadId) this.store.bindConversation(toUserId, { threadId });
-    const notificationBinding = threadId
-      ? this.store.getConversation(toUserId)
-      : null;
-    try {
-      const receipt = await this.delivery.sendText({
-        session,
-        toUserId,
-        contextToken: context.contextToken,
-        text: formatTaskNotification(text, Boolean(threadId)),
-      });
-      if (receipt.sentChunks !== receipt.totalChunks) {
+      if (!allowed.has(toUserId))
+        throw new Error(`用户 ${toUserId} 不在 allowedUserIds 中`);
+      const context = this.store.getContextToken(toUserId);
+      if (!context)
         throw new Error(
-          receipt.error ??
-            `微信通知未完整投递（已发送 ${receipt.sentChunks} 段）`,
+          "没有可用的 context_token；请先从目标微信账号向 CodeLink 发送一条消息",
         );
-      }
-    } catch (error) {
-      if (threadId && notificationBinding) {
-        this.store.replaceConversationIfUnchanged(
+      const threadId = isCodexThreadId(requestedThreadId)
+        ? requestedThreadId
+        : undefined;
+      const previousSnapshot = this.store.getConversationSnapshot(toUserId);
+      if (threadId) this.store.bindConversation(toUserId, { threadId });
+      const notificationSnapshot = threadId
+        ? this.store.getConversationSnapshot(toUserId)
+        : null;
+      try {
+        const receipt = await this.delivery.sendText({
+          session,
           toUserId,
-          notificationBinding,
-          previousBinding,
-        );
+          contextToken: context.contextToken,
+          text: formatTaskNotification(text, Boolean(threadId)),
+        });
+        if (receipt.sentChunks !== receipt.totalChunks) {
+          throw new Error(
+            receipt.error ??
+              `微信通知未完整投递（已发送 ${receipt.sentChunks} 段）`,
+          );
+        }
+      } catch (error) {
+        if (threadId && notificationSnapshot) {
+          this.store.replaceConversationSnapshotIfUnchanged(
+            toUserId,
+            notificationSnapshot,
+            previousSnapshot,
+          );
+        }
+        throw error;
       }
-      throw error;
-    }
-    return {
-      ok: true,
-      toUserId,
-      conversationBound: Boolean(threadId),
-      ...(threadId ? { threadId } : {}),
-    };
+      return {
+        ok: true,
+        toUserId,
+        conversationBound: Boolean(threadId),
+        ...(threadId ? { threadId } : {}),
+      };
+    });
+  }
+
+  private enqueueNotification<T>(
+    toUserId: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const previous = this.notificationQueues.get(toUserId) ?? Promise.resolve();
+    const result = previous.catch(() => undefined).then(operation);
+    const tail = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.notificationQueues.set(toUserId, tail);
+    return result.finally(() => {
+      if (this.notificationQueues.get(toUserId) === tail) {
+        this.notificationQueues.delete(toUserId);
+      }
+    });
   }
 
   private requireSession(): WeixinSession {
@@ -1057,6 +1082,18 @@ function resolveMessageIdentity(
       ? { legacyTaskId: `${fromUserId}-${message.create_time_ms}` }
       : {}),
   };
+}
+
+function sameWeixinSession(
+  current: WeixinSession,
+  expected: WeixinSession,
+): boolean {
+  return (
+    current.accountId === expected.accountId &&
+    current.token === expected.token &&
+    current.userId === expected.userId &&
+    current.baseUrl === expected.baseUrl
+  );
 }
 
 function previewText(value: string, max = 500): string {

@@ -21,6 +21,45 @@ function inboundMessageId(
   return `weixin:${encodeURIComponent(accountId)}:${source}:${String(value)}`;
 }
 
+function deferred() {
+  let resolve!: () => void;
+  let reject!: (error: Error) => void;
+  const promise = new Promise<void>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+function notificationFixture(params: {
+  sendText: (input: { toUserId: string; text: string }) => Promise<void>;
+  users?: string[];
+}) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "codelink-daemon-"));
+  cleanup.push(dir);
+  const store = new StateStore(dir);
+  const users = params.users ?? ["owner"];
+  store.saveSession({
+    accountId: "bot",
+    token: "token",
+    userId: "owner",
+    baseUrl: "https://ilinkai.weixin.qq.com",
+    savedAt: "now",
+  });
+  for (const user of users) store.saveContextToken(user, `context-${user}`);
+  const config = defaultConfig();
+  config.security.allowedUserIds = users;
+  return {
+    store,
+    daemon: new CodelinkDaemon(
+      config,
+      store,
+      { sendText: params.sendText } as unknown as WeixinClient,
+      { runTask: vi.fn() },
+    ),
+  };
+}
+
 afterEach(() => {
   vi.restoreAllMocks();
   for (const dir of cleanup.splice(0))
@@ -1223,10 +1262,11 @@ describe("CodelinkDaemon", () => {
         expect(input.text).toContain("task completed");
       },
     );
+    const setTyping = vi.fn<WeixinClient["setTyping"]>(async () => undefined);
     const daemon = new CodelinkDaemon(
       config,
       store,
-      { sendText } as unknown as WeixinClient,
+      { sendText, setTyping } as unknown as WeixinClient,
       { runTask: vi.fn() },
     );
 
@@ -1248,6 +1288,7 @@ describe("CodelinkDaemon", () => {
     );
     expect(sendText.mock.calls[0][0].text).toContain("可直接回复继续");
     expect(sendText.mock.calls[0][0].text).toContain("/new");
+    expect(setTyping).not.toHaveBeenCalled();
   });
 
   it("sends a clearly marked notification without changing the binding when thread metadata is unavailable", async () => {
@@ -1285,6 +1326,190 @@ describe("CodelinkDaemon", () => {
     });
     expect(store.getConversation("owner")?.threadId).toBe("previous-thread");
     expect(sendText.mock.calls[0][0].text).toContain("未切换当前 Codex 会话");
+  });
+
+  it("rejects a queued default-user notification if the captured WeChat session changes", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "codelink-daemon-"));
+    cleanup.push(dir);
+    const store = new StateStore(dir);
+    const sessionA: WeixinSession = {
+      accountId: "bot-a",
+      token: "token-a",
+      userId: "owner-a",
+      baseUrl: "https://account-a.example.invalid",
+      savedAt: "now-a",
+    };
+    store.saveSession(sessionA);
+    store.saveContextToken("owner-a", "context-owner-a");
+    const config = defaultConfig();
+    config.security.allowedUserIds = ["owner-a", "owner-b"];
+    const firstSend = deferred();
+    const sendText = vi
+      .fn<
+        (input: {
+          session: WeixinSession;
+          toUserId: string;
+          text: string;
+        }) => Promise<void>
+      >()
+      .mockImplementationOnce(() => firstSend.promise)
+      .mockResolvedValueOnce(undefined);
+    const contextReads = vi.spyOn(store, "getContextToken");
+    const bindings = vi.spyOn(store, "bindConversation");
+    const daemon = new CodelinkDaemon(
+      config,
+      store,
+      { sendText } as unknown as WeixinClient,
+      { runTask: vi.fn() },
+    );
+    const firstThread = "019f55b8-d06b-7213-98de-2815f865c43d";
+    const secondThread = "019f55b8-d06b-7213-98de-2815f865c43e";
+
+    const first = daemon.sendNotification("first", undefined, firstThread);
+    await vi.waitFor(() => expect(sendText).toHaveBeenCalledTimes(1));
+    const second = daemon.sendNotification("second", undefined, secondThread);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(sendText).toHaveBeenCalledTimes(1);
+    const contextReadsBeforeSessionChange = contextReads.mock.calls.length;
+    const bindingsBeforeSessionChange = bindings.mock.calls.length;
+
+    store.saveSession({
+      accountId: "bot-b",
+      token: "token-b",
+      userId: "owner-b",
+      baseUrl: "https://account-b.example.invalid",
+      savedAt: "now-b",
+    });
+    firstSend.resolve();
+
+    await expect(first).resolves.toMatchObject({ threadId: firstThread });
+    await expect(second).rejects.toThrow(
+      "微信会话已在通知排队期间发生变化，请重试",
+    );
+    expect(contextReads).toHaveBeenCalledTimes(contextReadsBeforeSessionChange);
+    expect(bindings).toHaveBeenCalledTimes(bindingsBeforeSessionChange);
+    expect(sendText).toHaveBeenCalledTimes(1);
+    expect(sendText.mock.calls[0][0].session).toEqual(sessionA);
+    expect(store.getConversation("owner-a")?.threadId).toBe(firstThread);
+  });
+
+  it("starts a queued success only after an earlier failure fully rolls back", async () => {
+    const firstSend = deferred();
+    let secondSnapshotAtSend: ReturnType<
+      StateStore["getConversationSnapshot"]
+    > | null = null;
+    const sendText = vi
+      .fn<(input: { toUserId: string; text: string }) => Promise<void>>()
+      .mockImplementationOnce(() => firstSend.promise)
+      .mockImplementationOnce(async () => {
+        secondSnapshotAtSend = store.getConversationSnapshot("owner");
+      });
+    const { daemon, store } = notificationFixture({ sendText });
+    store.bindConversation("owner", { threadId: "previous-thread" });
+    const firstThread = "019f55b8-d06b-7213-98de-2815f865c43d";
+    const secondThread = "019f55b8-d06b-7213-98de-2815f865c43e";
+
+    const first = daemon.sendNotification("first", undefined, firstThread);
+    await vi.waitFor(() => expect(sendText).toHaveBeenCalledTimes(1));
+    const second = daemon.sendNotification("second", undefined, secondThread);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const bindingWhileFirstPending = store.getConversation("owner")?.threadId;
+    firstSend.reject(new Error("first send failed"));
+    await expect(first).rejects.toThrow("first send failed");
+    await expect(second).resolves.toMatchObject({ threadId: secondThread });
+    expect(bindingWhileFirstPending).toBe(firstThread);
+    expect(secondSnapshotAtSend).not.toBeNull();
+    expect(store.getConversationSnapshot("owner")).toEqual(
+      secondSnapshotAtSend,
+    );
+  });
+
+  it("restores the last successful full snapshot when the next send fails", async () => {
+    const sendText = vi
+      .fn<(input: { toUserId: string; text: string }) => Promise<void>>()
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error("second send failed"));
+    const { daemon, store } = notificationFixture({ sendText });
+    store.bindConversation("owner", { threadId: "previous-thread" });
+    const firstThread = "019f55b8-d06b-7213-98de-2815f865c43d";
+    const secondThread = "019f55b8-d06b-7213-98de-2815f865c43e";
+
+    await daemon.sendNotification("first", undefined, firstThread);
+    const successfulSnapshot = store.getConversationSnapshot("owner");
+    await expect(
+      daemon.sendNotification("second", undefined, secondThread),
+    ).rejects.toThrow("second send failed");
+
+    expect(store.getConversationSnapshot("owner")).toEqual(successfulSnapshot);
+  });
+
+  it("restores the original full snapshot when all queued sends fail", async () => {
+    const firstSend = deferred();
+    const sendText = vi
+      .fn<(input: { toUserId: string; text: string }) => Promise<void>>()
+      .mockImplementationOnce(() => firstSend.promise)
+      .mockRejectedValueOnce(new Error("second send failed"));
+    const { daemon, store } = notificationFixture({ sendText });
+    store.bindConversation("owner", { threadId: "previous-thread" });
+    const originalSnapshot = store.getConversationSnapshot("owner");
+
+    const first = daemon.sendNotification(
+      "first",
+      undefined,
+      "019f55b8-d06b-7213-98de-2815f865c43d",
+    );
+    await vi.waitFor(() => expect(sendText).toHaveBeenCalledTimes(1));
+    const second = daemon.sendNotification(
+      "second",
+      undefined,
+      "019f55b8-d06b-7213-98de-2815f865c43e",
+    );
+    firstSend.reject(new Error("first send failed"));
+
+    await Promise.all([
+      expect(first).rejects.toThrow("first send failed"),
+      expect(second).rejects.toThrow("second send failed"),
+    ]);
+    expect(store.getConversationSnapshot("owner")).toEqual(originalSnapshot);
+    expect(
+      store.bindConversationIfUnchanged(
+        "owner",
+        originalSnapshot.binding,
+        "task-completed-after-rollback",
+        originalSnapshot.generation,
+      ),
+    ).toBe(true);
+  });
+
+  it("allows complete notification transactions for different users to run in parallel", async () => {
+    const ownerSend = deferred();
+    const teammateSend = deferred();
+    const sendText = vi.fn(
+      async (input: { toUserId: string; text: string }) =>
+        input.toUserId === "owner" ? ownerSend.promise : teammateSend.promise,
+    );
+    const { daemon, store } = notificationFixture({
+      sendText,
+      users: ["owner", "teammate"],
+    });
+    const ownerThread = "019f55b8-d06b-7213-98de-2815f865c43d";
+    const teammateThread = "019f55b8-d06b-7213-98de-2815f865c43e";
+
+    const owner = daemon.sendNotification("owner", "owner", ownerThread);
+    const teammate = daemon.sendNotification(
+      "teammate",
+      "teammate",
+      teammateThread,
+    );
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const callsWhileBothPending = sendText.mock.calls.length;
+
+    expect(store.getConversation("owner")?.threadId).toBe(ownerThread);
+    expect(store.getConversation("teammate")?.threadId).toBe(teammateThread);
+    ownerSend.resolve();
+    teammateSend.resolve();
+    await Promise.all([owner, teammate]);
+    expect(callsWhileBothPending).toBe(2);
   });
 
   it("does not roll back a newer successful notification from the same thread", async () => {

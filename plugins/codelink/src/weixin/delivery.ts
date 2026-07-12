@@ -36,7 +36,7 @@ export type TextDeliveryOptions = {
   sleep?: (milliseconds: number) => Promise<void>;
 };
 
-let globalDeliveryQueue: Promise<void> = Promise.resolve();
+const deliveryQueues = new Map<string, Promise<void>>();
 
 export class WeixinTextDelivery {
   private readonly clientIdFactory: () => string;
@@ -59,15 +59,21 @@ export class WeixinTextDelivery {
   }
 
   async sendText(input: TextDeliveryInput): Promise<DeliveryReceipt> {
-    const delivery = globalDeliveryQueue.then(
+    const previous = deliveryQueues.get(input.toUserId) ?? Promise.resolve();
+    const delivery = previous.then(
       () => this.deliver(input),
       () => this.deliver(input),
     );
-    globalDeliveryQueue = delivery.then(
+    const tail = delivery.then(
       () => undefined,
       () => undefined,
     );
-    return delivery;
+    deliveryQueues.set(input.toUserId, tail);
+    return delivery.finally(() => {
+      if (deliveryQueues.get(input.toUserId) === tail) {
+        deliveryQueues.delete(input.toUserId);
+      }
+    });
   }
 
   private async deliver(input: TextDeliveryInput): Promise<DeliveryReceipt> {

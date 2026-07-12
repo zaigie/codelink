@@ -53,7 +53,7 @@ Codex 当前会在 MCP `tools/call` 的 `_meta.threadId` 中提供调用方 thre
 
 daemon 在接受任务时记录消息到达时的绑定，保证这条微信消息不会因执行期间出现的新通知而误投到别的 thread。任务完成后只在绑定仍与启动快照一致时更新当前会话；若较新的桌面通知已经切换绑定，旧任务仍返回结果，但不会抢回绑定。
 
-通知发送失败时同样按绑定版本做条件恢复，因此较早失败的通知不会回滚掉较晚成功的同 thread 通知。这些保证针对单个常驻 daemon 进程；同一状态目录不支持多个 daemon 同时写入。
+同一微信用户的桌面通知把“读取完整会话 snapshot、写入通知绑定、分片发送、失败回滚”作为一个串行事务；下一条通知只会看到上一条成功结果或精确恢复后的 binding 与 generation。通知入队时同时捕获微信 session；若执行前 account、token、默认用户或 base URL 已变化，则在读取 context、绑定或发送之前拒绝，避免把旧账号队列与新账号凭证混用。不同用户使用独立队列，可并行发送。这些保证针对单个常驻 daemon 进程；同一状态目录不支持多个 daemon 同时写入。
 
 长任务不会阻塞微信长轮询。daemon 先把完整恢复请求与 replay ledger 以私有记录写入，再提交 `get_updates_buf`，随后在后台启动 typing 与任务执行；临时输入状态启动缓慢或失败都不会阻止持久接受、游标推进或 Codex。首个新 thread 尚未返回 ID 时，同一用户的后续消息只等待“路由建立”而不等待整个任务，拿到 ID 后即可通过 `turn/steer` 进入活动 turn。同一批更新里的连续消息也遵循这条规则。
 
@@ -65,7 +65,7 @@ daemon 在接受任务时记录消息到达时的绑定，保证这条微信消�
 
 ## 微信投递与持久化 outbox
 
-所有文本发送统一经过 `WeixinTextDelivery`：按 UTF-8 2048 字节限制切块，优先段落、换行和完整 Markdown fence/list item；整条消息全局串行；chunk 间节流；`ret=-2` 只做有限退避。每个 chunk 使用稳定 `client_id`，同一次重试以及 daemon 在 pending outbox 上的重启恢复都会复用相同 ID。
+所有文本发送统一经过 `WeixinTextDelivery`：按 UTF-8 2048 字节限制切块，优先段落、换行和完整 Markdown fence/list item；同一接收人整条消息串行、不同接收人并行；chunk 间节流；`ret=-2` 只做有限退避。每个 chunk 使用稳定 `client_id`，同一次重试以及 daemon 在 pending outbox 上的重启恢复都会复用相同 ID。
 
 任务执行状态与微信投递状态分别记录。Codex 成功但微信失败时，任务仍为 `completed`，投递记录单独为 `failed`。最终消息在执行提交前先以完整 payload 写入私有 outbox；投递成功后移除 payload。新版本不再创建或发送永久 acknowledgement；升级时发现旧版 pending acknowledgement 会直接标为 `skipped`，避免重启后冒出过期回执。`/tasks` 只返回预览和投递摘要，不暴露恢复正文、outbox 文本或稳定键。
 

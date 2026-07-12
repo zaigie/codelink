@@ -191,4 +191,33 @@ describe("StateStore", () => {
     expect(store.getConversation("owner")).toBeNull();
     expect(store.getConversationSnapshot("owner").generation).toBe(1);
   });
+
+  it("rejects an exact snapshot restore when only the expected generation is stale", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "codelink-state-"));
+    cleanup.push(dir);
+    const store = new StateStore(dir);
+    store.bindConversation("owner", { threadId: "same-thread" });
+    const staleExpected = store.getConversationSnapshot("owner");
+    const statePath = store.path("conversations.json");
+    const persisted = JSON.parse(fs.readFileSync(statePath, "utf8")) as {
+      conversations: Record<string, { threadId: string; updatedAt: string }>;
+      generations: Record<string, number>;
+    };
+    persisted.generations.owner = staleExpected.generation + 1;
+    fs.writeFileSync(statePath, `${JSON.stringify(persisted, null, 2)}\n`, {
+      mode: 0o600,
+    });
+    const current = store.getConversationSnapshot("owner");
+
+    expect(current.binding).toEqual(staleExpected.binding);
+    expect(current.generation).toBe(staleExpected.generation + 1);
+    expect(
+      store.replaceConversationSnapshotIfUnchanged(
+        "owner",
+        staleExpected,
+        { binding: null, generation: 0 },
+      ),
+    ).toBe(false);
+    expect(store.getConversationSnapshot("owner")).toEqual(current);
+  });
 });
