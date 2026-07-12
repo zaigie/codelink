@@ -8,6 +8,8 @@ import qrcodeTerminal from "qrcode-terminal";
 import { StateStore, WeixinSession } from "../state.js";
 import { WeixinClient } from "./client.js";
 
+const LOGIN_POLL_DELAY_MS = 1_000;
+
 export type LoginProgress = {
   qrPath: string;
   qrContent: string;
@@ -73,8 +75,12 @@ export async function loginWithQr(params: {
           );
       verifyCode = undefined;
     } catch (error) {
-      if (error instanceof Error && error.name === "AbortError") continue;
-      process.stderr.write(`二维码状态查询失败，将重试：${String(error)}\n`);
+      if (!(error instanceof Error && error.name === "AbortError")) {
+        process.stderr.write(
+          `二维码状态查询失败，将重试：${String(error)}\n`,
+        );
+      }
+      await delay(LOGIN_POLL_DELAY_MS);
       continue;
     }
 
@@ -121,8 +127,17 @@ export async function loginWithQr(params: {
         };
         params.store.saveSession(session);
         const config = params.store.loadConfig();
-        if (session.userId && config.security.allowedUserIds.length === 0) {
-          config.security.allowedUserIds = [session.userId];
+        if (session.userId) {
+          const allowedUserIds = config.security.allowedUserIds;
+          const previousOwnerWasDefault =
+            Boolean(existing?.userId) &&
+            allowedUserIds.length === 1 &&
+            allowedUserIds[0] === existing?.userId;
+          if (previousOwnerWasDefault) {
+            config.security.allowedUserIds = [session.userId];
+          } else if (!allowedUserIds.includes(session.userId)) {
+            allowedUserIds.push(session.userId);
+          }
           params.store.saveConfig(config);
         }
         process.stdout.write(`登录成功，账号：${session.accountId}\n`);
@@ -153,10 +168,11 @@ export async function loginWithQr(params: {
         currentBaseUrl = undefined;
         verifyCode = undefined;
         await publishQr(qr.qrcode_img_content);
-        break;
+        continue;
       case "verify_code_blocked":
         throw new Error("配对码验证被暂时阻止，请稍后重新登录");
     }
+    await delay(LOGIN_POLL_DELAY_MS);
   }
 
   throw new Error(`等待扫码超时；二维码保留在 ${path.resolve(qrPath)}`);
@@ -176,4 +192,8 @@ function normalizeBaseUrl(value: string): string {
   return trimmed.startsWith("http://") || trimmed.startsWith("https://")
     ? trimmed
     : `https://${trimmed}`;
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
