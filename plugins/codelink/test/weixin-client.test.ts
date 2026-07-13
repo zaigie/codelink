@@ -209,6 +209,80 @@ describe("WeixinClient", () => {
     });
   });
 
+  it.each([
+    [
+      "transport TypeError",
+      async (): Promise<Response> => {
+        throw new TypeError("network disconnected");
+      },
+    ],
+    [
+      "HTTP failure",
+      async (): Promise<Response> =>
+        new Response("upstream unavailable", { status: 502 }),
+    ],
+    [
+      "invalid JSON response",
+      async (): Promise<Response> =>
+        new Response("not-json", { status: 200 }),
+    ],
+  ])(
+    "reuses the typing ticket after an ambiguous %s",
+    async (_failureName, failFirstTypingRequest) => {
+      let typingAttempts = 0;
+      const fetchMock = vi.fn<typeof fetch>(async (url, init) => {
+        const path = new URL(String(url)).pathname;
+        if (path.endsWith("/getconfig")) {
+          return new Response(
+            JSON.stringify({ ret: 0, typing_ticket: "typing-ticket" }),
+            { status: 200 },
+          );
+        }
+        if (typingAttempts++ === 0) return failFirstTypingRequest();
+        return new Response(JSON.stringify({ ret: 0 }), { status: 200 });
+      });
+      const client = new WeixinClient(defaultConfig().weixin, fetchMock);
+      const params = {
+        session: {
+          accountId: "bot",
+          token: "token",
+          userId: "owner",
+          baseUrl: "https://ilinkai.weixin.qq.com",
+          savedAt: "now",
+        },
+        toUserId: "owner",
+        contextToken: "ctx",
+      };
+
+      await expect(
+        client.setTyping({ ...params, typing: true }),
+      ).rejects.toThrow();
+      await expect(
+        client.setTyping({ ...params, typing: false }),
+      ).resolves.toBeUndefined();
+
+      expect(
+        fetchMock.mock.calls.map(([url]) => new URL(String(url)).pathname),
+      ).toEqual([
+        "/ilink/bot/getconfig",
+        "/ilink/bot/sendtyping",
+        "/ilink/bot/sendtyping",
+      ]);
+      expect(
+        fetchMock.mock.calls.slice(1).map(([, init]) => {
+          const body = JSON.parse(String(init?.body));
+          return {
+            status: body.status,
+            typingTicket: body.typing_ticket,
+          };
+        }),
+      ).toEqual([
+        { status: 1, typingTicket: "typing-ticket" },
+        { status: 2, typingTicket: "typing-ticket" },
+      ]);
+    },
+  );
+
   it("refreshes a rejected typing ticket on the next status update", async () => {
     const fetchMock = vi
       .fn<typeof fetch>()
