@@ -23,11 +23,20 @@ export class WeixinApiError extends Error {
     super(message);
   }
 
-  get errorCode(): number | undefined {
+  // 仅当远端以非零 ret/errcode 明确拒绝时有值；HTTP/transport 层失败不算协议拒绝。
+  get protocolErrorCode(): number | undefined {
     if (typeof this.ret === "number" && this.ret !== 0) return this.ret;
     if (typeof this.errcode === "number" && this.errcode !== 0)
       return this.errcode;
-    return this.status;
+    return undefined;
+  }
+
+  get isProtocolRejection(): boolean {
+    return this.protocolErrorCode !== undefined;
+  }
+
+  get errorCode(): number | undefined {
+    return this.protocolErrorCode ?? this.status;
   }
 }
 
@@ -144,24 +153,7 @@ export class WeixinClient {
         }),
       },
     );
-    const failedRet = typeof response.ret === "number" && response.ret !== 0;
-    const failedErrcode =
-      typeof response.errcode === "number" && response.errcode !== 0;
-    if (failedRet || failedErrcode) {
-      const codes = [
-        failedRet ? `ret=${response.ret}` : "",
-        failedErrcode ? `errcode=${response.errcode}` : "",
-      ]
-        .filter(Boolean)
-        .join(" ");
-      throw new WeixinApiError(
-        `sendmessage ${codes}: ${response.errmsg ?? "unknown error"}`,
-        undefined,
-        JSON.stringify(response),
-        response.ret,
-        response.errcode,
-      );
-    }
+    this.throwForIlinkError("sendmessage", response);
   }
 
   async setTyping(params: {
@@ -193,11 +185,7 @@ export class WeixinClient {
       });
       this.throwForIlinkError("sendtyping", typingResponse);
     } catch (error) {
-      if (
-        error instanceof WeixinApiError &&
-        ((typeof error.ret === "number" && error.ret !== 0) ||
-          (typeof error.errcode === "number" && error.errcode !== 0))
-      ) {
+      if (error instanceof WeixinApiError && error.isProtocolRejection) {
         this.typingTickets.delete(this.typingTicketCacheKey(params));
       }
       throw error;

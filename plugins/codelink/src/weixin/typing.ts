@@ -207,8 +207,9 @@ export class WeixinTypingIndicator {
     } catch (error) {
       if (signal?.aborted) return false;
       if (logErrors) {
+        // 只输出协议层拒绝码；HTTP status 回退（如 200+非法 JSON）会误导排障。
         const errorCode =
-          error instanceof WeixinApiError ? error.errorCode : undefined;
+          error instanceof WeixinApiError ? error.protocolErrorCode : undefined;
         const codeSuffix =
           typeof errorCode === "number" ? `（错误码 ${errorCode}）` : "";
         process.stderr.write(`微信输入状态更新失败${codeSuffix}\n`);

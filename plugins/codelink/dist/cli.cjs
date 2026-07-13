@@ -6212,11 +6212,18 @@ var WeixinApiError = class extends Error {
     this.ret = ret;
     this.errcode = errcode;
   }
-  get errorCode() {
+  // 仅当远端以非零 ret/errcode 明确拒绝时有值；HTTP/transport 层失败不算协议拒绝。
+  get protocolErrorCode() {
     if (typeof this.ret === "number" && this.ret !== 0) return this.ret;
     if (typeof this.errcode === "number" && this.errcode !== 0)
       return this.errcode;
-    return this.status;
+    return void 0;
+  }
+  get isProtocolRejection() {
+    return this.protocolErrorCode !== void 0;
+  }
+  get errorCode() {
+    return this.protocolErrorCode ?? this.status;
   }
 };
 var WeixinClient = class {
@@ -6300,21 +6307,7 @@ var WeixinClient = class {
         })
       }
     );
-    const failedRet = typeof response.ret === "number" && response.ret !== 0;
-    const failedErrcode = typeof response.errcode === "number" && response.errcode !== 0;
-    if (failedRet || failedErrcode) {
-      const codes = [
-        failedRet ? `ret=${response.ret}` : "",
-        failedErrcode ? `errcode=${response.errcode}` : ""
-      ].filter(Boolean).join(" ");
-      throw new WeixinApiError(
-        `sendmessage ${codes}: ${response.errmsg ?? "unknown error"}`,
-        void 0,
-        JSON.stringify(response),
-        response.ret,
-        response.errcode
-      );
-    }
+    this.throwForIlinkError("sendmessage", response);
   }
   async setTyping(params) {
     params.signal?.throwIfAborted();
@@ -6335,7 +6328,9 @@ var WeixinClient = class {
       });
       this.throwForIlinkError("sendtyping", typingResponse);
     } catch (error) {
-      this.typingTickets.delete(this.typingTicketCacheKey(params));
+      if (error instanceof WeixinApiError && error.isProtocolRejection) {
+        this.typingTickets.delete(this.typingTicketCacheKey(params));
+      }
       throw error;
     }
   }
@@ -6911,10 +6906,10 @@ var WeixinTypingIndicator = class {
     } catch (error) {
       if (signal?.aborted) return false;
       if (logErrors) {
-        process.stderr.write(
-          `\u5FAE\u4FE1\u8F93\u5165\u72B6\u6001\u66F4\u65B0\u5931\u8D25\uFF1A${error instanceof Error ? error.message : String(error)}
-`
-        );
+        const errorCode = error instanceof WeixinApiError ? error.protocolErrorCode : void 0;
+        const codeSuffix = typeof errorCode === "number" ? `\uFF08\u9519\u8BEF\u7801 ${errorCode}\uFF09` : "";
+        process.stderr.write(`\u5FAE\u4FE1\u8F93\u5165\u72B6\u6001\u66F4\u65B0\u5931\u8D25${codeSuffix}
+`);
       }
       return false;
     }

@@ -561,4 +561,49 @@ describe("WeixinTypingIndicator", () => {
     expect(stderrOutput).not.toContain("LEAK_MARKER");
     expect(stderrOutput).not.toContain("fake-secret");
   });
+
+  it("logs no misleading code when the failure is not a protocol rejection", async () => {
+    const fetchMock = vi.fn<typeof fetch>(async (url, init) => {
+      const path = new URL(String(url)).pathname;
+      if (path.endsWith("/getconfig")) {
+        return new Response(
+          JSON.stringify({ ret: 0, typing_ticket: "typing-ticket" }),
+          { status: 200 },
+        );
+      }
+      const body = JSON.parse(String(init?.body));
+      if (body.status === 1) {
+        // HTTP 200 但响应体不是 JSON：不是协议拒绝，不得打出「错误码 200」。
+        return new Response("<html>gateway glitch</html>", { status: 200 });
+      }
+      return new Response(JSON.stringify({ ret: 0 }), { status: 200 });
+    });
+    let resolveLogged!: () => void;
+    const logged = new Promise<void>((resolve) => {
+      resolveLogged = resolve;
+    });
+    let stderrOutput = "";
+    const stderr = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation((chunk) => {
+        stderrOutput += String(chunk);
+        resolveLogged();
+        return true;
+      });
+    const client = new WeixinClient(defaultConfig().weixin, fetchMock);
+    const indicator = new WeixinTypingIndicator(client);
+
+    const result = await indicator.during(
+      { session, toUserId: "owner", contextToken: "ctx" },
+      async () => {
+        await logged;
+        return "task result";
+      },
+    );
+
+    expect(result).toBe("task result");
+    expect(stderr).toHaveBeenCalledTimes(1);
+    expect(stderrOutput).toBe("微信输入状态更新失败\n");
+    expect(stderrOutput).not.toContain("错误码 200");
+  });
 });
