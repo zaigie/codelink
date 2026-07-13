@@ -102,6 +102,14 @@ function runGeneratedRunner(shell, runnerPath, exitCode) {
   );
 }
 
+function readPowerShellLog(logPath) {
+  const content = fs.readFileSync(logPath);
+  if (content[0] === 0xff && content[1] === 0xfe) {
+    return content.subarray(2).toString("utf16le");
+  }
+  return content.toString("utf8");
+}
+
 const windowsPowerShellShells =
   process.platform === "win32" ? availablePowerShellShells() : [];
 
@@ -277,9 +285,8 @@ describe("Windows daemon runner", () => {
 
           expect(result.status).toBe(0);
           expect(
-            fs.readFileSync(
+            readPowerShellLog(
               path.join(fixture.stateDir, "daemon.stderr.log"),
-              "utf8",
             ),
           ).toContain("fixture diagnostic");
         } finally {
@@ -304,9 +311,8 @@ describe("Windows daemon runner", () => {
 
           expect(result.status).toBe(23);
           expect(
-            fs.readFileSync(
+            readPowerShellLog(
               path.join(fixture.stateDir, "daemon.stderr.log"),
-              "utf8",
             ),
           ).toContain("fixture diagnostic");
         } finally {
