@@ -160,15 +160,17 @@ node (Join-Path $StateDir "runtime\cli.cjs") doctor
 
 更新不会改写或删除已有 Codex thread。旧版本已经创建的时间戳项目会继续作为历史记录保留；更新后的微信新会话统一归入当前用户主目录下由系统路径 API 生成的 `Documents/Codex/CodeLink`。
 
-## 卸载后台服务
+## 卸载 CodeLink
 
-卸载只移除常驻服务和复制的 runtime，保留微信登录与任务状态：
+卸载会依次停止常驻服务、移除 `codelink` 插件与本地 marketplace，再删除服务配置和复制的 runtime；微信登录、任务绑定、日志、状态目录及持久源码均保留：
 
 ```text
 macOS:  sh <源码目录>/plugins/codelink/scripts/uninstall-launch-agent.sh
 Linux:  sh <源码目录>/plugins/codelink/scripts/uninstall-systemd-user.sh
 Windows: powershell -NoProfile -ExecutionPolicy Bypass -File <源码目录>\plugins\codelink\scripts\uninstall-scheduled-task.ps1
 ```
+
+重复运行卸载是安全的。脚本只把带有稳定“尚未安装/已经移除”标志的结果当作幂等成功；权限、服务管理器或 Codex 的真实错误会停止卸载，并保留尚未清理的服务配置和 runtime 供诊断，修复后重新运行即可继续完成。若本机已卸载 Codex，卸载仍会停止后台服务并清理 runtime，只跳过插件与 marketplace 移除。
 
 删除状态目录（`CODELINK_STATE_DIR`，未设置时为当前用户主目录下的 `.codelink`）会删除凭证和绑定；默认源码也位于当前用户主目录下的 `.codelink/source`，若它落在同一目录中也会被删除。执行前必须获得用户明确确认。
 
