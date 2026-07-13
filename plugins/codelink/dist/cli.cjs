@@ -5779,6 +5779,7 @@ var AppServerSession = class {
       this.stderr = `${this.stderr}${chunk.toString("utf8")}`.slice(-2e4);
     });
     child.once("error", (error) => this.fail(error));
+    child.stdin.on("error", (error) => this.fail(error));
     child.once("exit", (code, signal) => {
       if (this.closed) return;
       this.fail(
@@ -5884,7 +5885,10 @@ ${this.stderr}` : ""}`
       };
       this.child.once("close", finish);
       this.child.once("error", finish);
-      this.child.stdin.end();
+      try {
+        this.child.stdin.end();
+      } catch {
+      }
       forceClose = setTimeout(() => {
         if (this.child.exitCode === null) this.child.kill("SIGTERM");
       }, 1e3);
@@ -5907,9 +5911,8 @@ ${this.stderr}` : ""}`
     this.onMessage(message);
   }
   onMessage(message) {
-    if (message.method && message.id !== void 0) {
-      const unsupported = message.method.endsWith("/requestApproval") ? `CodeLink \u5F53\u524D\u4E0D\u652F\u6301\u5FAE\u4FE1\u5BA1\u6279\uFF08${message.method}\uFF09` : `CodeLink \u5F53\u524D\u4E0D\u652F\u6301 Codex \u4EA4\u4E92\u8BF7\u6C42\uFF08${message.method}\uFF09`;
-      this.fail(new Error(unsupported));
+    if (message.method && (typeof message.id === "number" || typeof message.id === "string")) {
+      this.respondToServerRequest(message.id, message.method);
       return;
     }
     if (message.method && message.params) {
@@ -5940,6 +5943,48 @@ ${this.stderr}` : ""}`
         pending.resolve(message.result);
       }
       return;
+    }
+  }
+  respondToServerRequest(id, method) {
+    try {
+      switch (method) {
+        case "item/commandExecution/requestApproval":
+        case "item/fileChange/requestApproval":
+          this.write({ id, result: { decision: "decline" } });
+          return;
+        case "item/tool/requestUserInput":
+          this.write({ id, result: { answers: {} } });
+          return;
+        case "mcpServer/elicitation/request":
+          this.write({
+            id,
+            result: { action: "decline", content: null, _meta: null }
+          });
+          return;
+        case "item/permissions/requestApproval":
+          this.write({ id, result: { permissions: {}, scope: "turn" } });
+          return;
+        case "execCommandApproval":
+        case "applyPatchApproval":
+          this.write({ id, result: { decision: "denied" } });
+          return;
+        default:
+          this.write({
+            id,
+            error: {
+              code: -32601,
+              message: `Method not supported: ${method}`
+            }
+          });
+          process.stderr.write(
+            `Codex App Server \u53D1\u6765\u672A\u652F\u6301\u7684\u4EA4\u4E92\u8BF7\u6C42\uFF1A${method}
+`
+          );
+      }
+    } catch (error) {
+      this.fail(
+        error instanceof Error ? error : new Error(`\u54CD\u5E94 Codex App Server \u8BF7\u6C42\u5931\u8D25\uFF1A${String(error)}`)
+      );
     }
   }
   handleTurnMessage(method, params) {

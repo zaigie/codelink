@@ -65,6 +65,7 @@ CodeLink 新建的微信会话会保存到本机 Codex 存储并返回 thread ID
 
 - 当前只处理文字消息；
 - 微信续接不等于 HITL 审批，不能批准 Codex 工具调用或权限请求；
+- daemon 作为非交互 App Server 客户端，会拒绝命令与文件审批以及 MCP elicitation，返回空的用户输入与权限授予，并对未知 server request 返回 method-not-supported 错误且在日志记录方法名，避免 turn 无期限等待且保持可诊断；
 - 微信新建的会话统一使用 CodeLink 工作目录；绑定的桌面任务保持原项目、上下文和设置；
 - 核心运行时面向官方 Codex 与 Node.js 22 覆盖的 macOS、Linux、Windows x64/arm64；macOS 已实机运行，Linux/Windows 安装器仍待对应系统首轮实机回归；
 - 自动常驻分别使用 macOS LaunchAgent、Linux systemd user service 和 Windows 当前用户 Scheduled Task；非 systemd Linux 需要用户已有的进程管理器；
