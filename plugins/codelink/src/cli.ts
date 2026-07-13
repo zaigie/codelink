@@ -105,7 +105,7 @@ async function main(): Promise<void> {
         ok: true,
         outputPath,
         accountId: bundle.account.accountId,
-        userId: bundle.account.userId,
+        userIdPresent: Boolean(bundle.account.userId),
         tokenPresent: true,
         contextTokens: Object.keys(bundle.contextTokens ?? {}).length,
         routeTagPresent: Boolean(bundle.routeTag),

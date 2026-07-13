@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "files": {
-    "cli.cjs": "816ac864d671f032084dcd900208857696c7402780b66046971b7bc958863b28",
+    "cli.cjs": "bc1ba07703d52284ca6001b303b9abe6cc44c65c66cb0fcb5f82dfa5cae561e5",
     "mcp.js": "839034c3dfa2b6128907c397126bec4f6efbe7abe9a6134d94c482959cba8147"
   }
 }
