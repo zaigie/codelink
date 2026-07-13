@@ -7961,7 +7961,8 @@ function importOpenClawState(params) {
   params.store.saveConfig(config);
   return {
     accountId: session.accountId,
-    ...session.userId ? { userId: session.userId } : {},
+    // 微信用户 ID 不进入 stdout/日志；只报告是否存在。
+    userIdPresent: Boolean(session.userId),
     tokenPresent: true,
     syncCursorImported: bundle.getUpdatesBuf !== void 0,
     contextTokensImported,
@@ -8544,7 +8545,7 @@ async function main() {
         ok: true,
         outputPath,
         accountId: bundle.account.accountId,
-        userId: bundle.account.userId,
+        userIdPresent: Boolean(bundle.account.userId),
         tokenPresent: true,
         contextTokens: Object.keys(bundle.contextTokens ?? {}).length,
         routeTagPresent: Boolean(bundle.routeTag)

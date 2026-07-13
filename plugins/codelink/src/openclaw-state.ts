@@ -23,7 +23,7 @@ export type PortableOpenClawState = {
 
 export type ImportSummary = {
   accountId: string;
-  userId?: string;
+  userIdPresent: boolean;
   tokenPresent: true;
   syncCursorImported: boolean;
   contextTokensImported: number;
@@ -149,7 +149,8 @@ export function importOpenClawState(params: {
 
   return {
     accountId: session.accountId,
-    ...(session.userId ? { userId: session.userId } : {}),
+    // 微信用户 ID 不进入 stdout/日志；只报告是否存在。
+    userIdPresent: Boolean(session.userId),
     tokenPresent: true,
     syncCursorImported: bundle.getUpdatesBuf !== undefined,
     contextTokensImported,

@@ -73,11 +73,14 @@ describe("OpenClaw state migration", () => {
     const summary = importOpenClawState({ inputPath: outputPath, store });
     expect(summary).toMatchObject({
       accountId: "bot-im-bot",
+      userIdPresent: true,
       tokenPresent: true,
       syncCursorImported: true,
       contextTokensImported: 1,
       routeTagImported: true,
     });
+    // CLI 摘要不得携带微信用户 ID 原文。
+    expect(JSON.stringify(summary)).not.toContain("owner@im.wechat");
     expect(store.loadSession()?.token).toBe("wechat-secret");
     expect(store.loadSyncCursor()).toBe("cursor");
     expect(store.getContextToken("owner@im.wechat")?.contextToken).toBe(
