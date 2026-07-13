@@ -6190,6 +6190,11 @@ function parseNewConversationIntent(text) {
   return { startNew: false, prompt: normalized };
 }
 
+// src/delay.ts
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 // src/codex-thread-id.ts
 var CODEX_THREAD_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 function isCodexThreadId(value) {
@@ -7731,9 +7736,6 @@ ${result.finalResponse}` : result.finalResponse;
 function taskDeliveryKey(messageId, stage) {
   return `task:${messageId}:${stage}`;
 }
-function delay(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 // src/daemon-client.ts
 var DaemonClient = class {
@@ -8299,6 +8301,7 @@ var import_node_fs6 = __toESM(require("node:fs"), 1);
 var import_promises = __toESM(require("node:readline/promises"), 1);
 var import_qrcode = __toESM(require_lib(), 1);
 var import_qrcode_terminal = __toESM(require_main(), 1);
+var LOGIN_POLL_DELAY_MS = 1e3;
 async function loginWithQr(params) {
   const existing = params.store.loadSession();
   const qrPath = params.store.path("login-qr.png");
@@ -8349,8 +8352,11 @@ async function loginWithQr(params) {
       verifyCode = void 0;
     } catch (error) {
       if (error instanceof Error && error.name === "AbortError") continue;
-      process.stderr.write(`\u4E8C\u7EF4\u7801\u72B6\u6001\u67E5\u8BE2\u5931\u8D25\uFF0C\u5C06\u91CD\u8BD5\uFF1A${String(error)}
-`);
+      process.stderr.write(
+        `\u4E8C\u7EF4\u7801\u72B6\u6001\u67E5\u8BE2\u5931\u8D25\uFF0C\u5C06\u91CD\u8BD5\uFF1A${String(error)}
+`
+      );
+      await delay(LOGIN_POLL_DELAY_MS);
       continue;
     }
     switch (status.status) {
@@ -8393,9 +8399,16 @@ async function loginWithQr(params) {
         };
         params.store.saveSession(session);
         const config = params.store.loadConfig();
-        if (session.userId && config.security.allowedUserIds.length === 0) {
-          config.security.allowedUserIds = [session.userId];
-          params.store.saveConfig(config);
+        if (session.userId) {
+          const allowedUserIds = config.security.allowedUserIds;
+          const previousOwnerWasDefault = Boolean(existing?.userId) && allowedUserIds.length === 1 && allowedUserIds[0] === existing?.userId;
+          if (previousOwnerWasDefault && allowedUserIds[0] !== session.userId) {
+            config.security.allowedUserIds = [session.userId];
+            params.store.saveConfig(config);
+          } else if (!allowedUserIds.includes(session.userId)) {
+            allowedUserIds.push(session.userId);
+            params.store.saveConfig(config);
+          }
         }
         removeQrFile(qrPath);
         process.stdout.write("\u767B\u5F55\u6210\u529F\u3002\n");
@@ -8427,10 +8440,12 @@ async function loginWithQr(params) {
         currentBaseUrl = void 0;
         verifyCode = void 0;
         await publishQr(qr.qrcode_img_content);
-        break;
+        await delay(LOGIN_POLL_DELAY_MS);
+        continue;
       case "verify_code_blocked":
         throw new Error("\u914D\u5BF9\u7801\u9A8C\u8BC1\u88AB\u6682\u65F6\u963B\u6B62\uFF0C\u8BF7\u7A0D\u540E\u91CD\u65B0\u767B\u5F55");
     }
+    await delay(LOGIN_POLL_DELAY_MS);
   }
   removeQrFile(qrPath);
   throw new Error("\u7B49\u5F85\u626B\u7801\u8D85\u65F6\uFF0C\u8BF7\u91CD\u65B0\u8FD0\u884C\u767B\u5F55\u547D\u4EE4\u83B7\u53D6\u65B0\u4E8C\u7EF4\u7801");

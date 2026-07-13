@@ -1,6 +1,7 @@
 import http, { IncomingMessage, ServerResponse } from "node:http";
 
 import { parseNewConversationIntent } from "./conversation-intent.js";
+import { delay } from "./delay.js";
 import { CodelinkConfig } from "./config.js";
 import {
   RunTaskInput,
@@ -1067,6 +1068,3 @@ function taskDeliveryKey(
   return `task:${messageId}:${stage}`;
 }
 
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}

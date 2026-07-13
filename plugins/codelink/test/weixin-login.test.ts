@@ -260,7 +260,7 @@ describe("loginWithQr", () => {
     const session = await loginWithQr({
       client: { getQrCode, getQrStatus } as never,
       store,
-      timeoutMs: 1_000,
+      timeoutMs: 5_000,
       onQr,
     });
 
