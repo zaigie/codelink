@@ -1,4 +1,6 @@
+import { createHash, timingSafeEqual } from "node:crypto";
 import http, { IncomingMessage, ServerResponse } from "node:http";
+import { isIP } from "node:net";
 
 import { parseNewConversationIntent } from "./conversation-intent.js";
 import { CodelinkConfig } from "./config.js";
@@ -48,12 +50,24 @@ type PendingThread = {
   settle(threadId?: string): void;
 };
 
+type MessageIdentity = {
+  current: string;
+  legacyTaskId?: string;
+};
+
+export type CodelinkDaemonOptions = {
+  authToken?: string;
+};
+
 export class CodelinkDaemon {
   private readonly server: http.Server;
   private readonly delivery: WeixinTextDelivery;
   private readonly typing: WeixinTypingIndicator;
+  private readonly authToken: string;
   private readonly backgroundTasks = new Set<Promise<void>>();
   private readonly pendingThreads = new Map<string, PendingThread>();
+  private readonly inFlightOperationalReplies = new Set<string>();
+  private readonly notificationQueues = new Map<string, Promise<void>>();
   private stopping = false;
   private pollingStartedAt?: string;
   private lastPollSuccessAt?: string;
@@ -67,15 +81,19 @@ export class CodelinkDaemon {
     private readonly store: StateStore,
     private readonly client: WeixinClient,
     private readonly taskRunner: TaskRunner,
+    options: CodelinkDaemonOptions = {},
   ) {
     this.delivery = new WeixinTextDelivery(client);
     this.typing = new WeixinTypingIndicator(client);
+    this.authToken =
+      options.authToken?.trim() || this.store.getOrCreateDaemonAuthToken();
     this.server = http.createServer((request, response) => {
       void this.handleHttp(request, response);
     });
   }
 
   async start(): Promise<void> {
+    assertLoopbackHost(this.config.daemon.host);
     const session = this.requireSession();
     await new Promise<void>((resolve, reject) => {
       this.server.once("error", reject);
@@ -202,45 +220,49 @@ export class CodelinkDaemon {
           : [],
     );
     if (!allowed.has(fromUserId)) {
-      process.stderr.write(`忽略未授权微信用户：${fromUserId}\n`);
+      process.stderr.write("忽略未授权微信消息\n");
+      return;
+    }
+    const identity = resolveMessageIdentity(
+      session.accountId,
+      fromUserId,
+      message,
+    );
+    const messageId = identity.current;
+    if (this.store.hasProcessedMessage(messageId)) return;
+    if (this.inFlightOperationalReplies.has(messageId)) return;
+    const existingTask =
+      this.store.findTask(messageId) ??
+      (identity.legacyTaskId
+        ? this.store.findTask(identity.legacyTaskId)
+        : null);
+    if (existingTask?.fromUserId === fromUserId) {
+      this.store.markProcessedMessage(messageId);
       return;
     }
     if (message.context_token)
       this.store.saveContextToken(fromUserId, message.context_token);
-
-    const messageId = String(
-      message.message_id ??
-        message.seq ??
-        `${fromUserId}-${message.create_time_ms ?? Date.now()}`,
-    );
-    if (this.store.findTask(messageId)) return;
     const contextToken =
       message.context_token ||
       this.store.getContextToken(fromUserId)?.contextToken;
 
     if (text === "/status") {
-      return contextToken
-        ? this.trackBackground(
-            this.deliverOperationalText(
-              session,
-              fromUserId,
-              contextToken,
-              this.renderStatus(),
-            ),
-          )
-        : undefined;
+      return this.deliverCommandReply(
+        session,
+        messageId,
+        fromUserId,
+        contextToken,
+        this.renderStatus(),
+      );
     }
     if (text === "/help") {
-      return contextToken
-        ? this.trackBackground(
-            this.deliverOperationalText(
-              session,
-              fromUserId,
-              contextToken,
-              "CodeLink：普通消息继续当前 Codex 会话；没有当前会话时自动新建。发送 /new，或直接说“开个新会话”，即可切换。命令：/status、/help。",
-            ),
-          )
-        : undefined;
+      return this.deliverCommandReply(
+        session,
+        messageId,
+        fromUserId,
+        contextToken,
+        "CodeLink：普通消息继续当前 Codex 会话；没有当前会话时自动新建。发送 /new，或直接说“开个新会话”，即可切换。命令：/status、/help。",
+      );
     }
 
     const conversationIntent = parseNewConversationIntent(text);
@@ -248,16 +270,13 @@ export class CodelinkDaemon {
       this.store.clearConversation(fromUserId);
       this.pendingThreads.delete(fromUserId);
       if (!conversationIntent.prompt) {
-        return contextToken
-          ? this.trackBackground(
-              this.deliverOperationalText(
-                session,
-                fromUserId,
-                contextToken,
-                "新会话已开启，上一个会话的上下文不会带入。直接发送下一条消息即可开始。",
-              ),
-            )
-          : undefined;
+        return this.deliverCommandReply(
+          session,
+          messageId,
+          fromUserId,
+          contextToken,
+          "新会话已开启，上一个会话的上下文不会带入。直接发送下一条消息即可开始。",
+        );
       }
     }
 
@@ -298,8 +317,11 @@ export class CodelinkDaemon {
         startedAt: now,
       })
     ) {
+      ownedPending?.settle();
+      this.store.markProcessedMessage(messageId);
       return;
     }
+    this.store.markProcessedMessage(messageId);
 
     const execution = this.executeTask(
       session,
@@ -752,6 +774,30 @@ export class CodelinkDaemon {
     }));
   }
 
+  // 命令回复在投递结束后才写入 replay ledger：进程若在投递中崩溃，
+  // 重启重放会重新执行幂等命令并补发回复；批内重复由 in-flight 集合去重。
+  private deliverCommandReply(
+    session: WeixinSession,
+    messageId: string,
+    fromUserId: string,
+    contextToken: string | undefined,
+    text: string,
+  ): Promise<void> | undefined {
+    if (!contextToken) {
+      this.store.markProcessedMessage(messageId);
+      return undefined;
+    }
+    this.inFlightOperationalReplies.add(messageId);
+    return this.trackBackground(
+      this.deliverOperationalText(session, fromUserId, contextToken, text).finally(
+        () => {
+          this.store.markProcessedMessage(messageId);
+          this.inFlightOperationalReplies.delete(messageId);
+        },
+      ),
+    );
+  }
+
   private async deliverOperationalText(
     session: WeixinSession,
     toUserId: string,
@@ -811,10 +857,7 @@ export class CodelinkDaemon {
     response: ServerResponse,
   ): Promise<void> {
     try {
-      if (request.method === "GET" && request.url === "/health") {
-        const status = this.getStatus();
-        return this.json(response, status.ok ? 200 : 503, status);
-      }
+      // /healthz 是安装器识别端口归属的无标识探针，必须在认证之前响应。
       if (request.method === "GET" && request.url === "/healthz") {
         const status = this.getStatus();
         return this.json(response, status.ok ? 200 : 503, {
@@ -822,6 +865,24 @@ export class CodelinkDaemon {
           ok: status.ok,
           degraded: status.degraded,
           sessionExpired: status.sessionExpired,
+        });
+      }
+      if (!this.isAuthorized(request)) {
+        response.writeHead(401, {
+          "Content-Type": "application/json; charset=utf-8",
+          "WWW-Authenticate": "Bearer",
+        });
+        response.end(JSON.stringify({ ok: false, error: "unauthorized" }));
+        return;
+      }
+      const status = this.getStatus();
+      if (request.method === "GET" && request.url === "/health") {
+        return this.json(response, status.ok ? 200 : 503, status);
+      }
+      if (!status.ok) {
+        return this.json(response, 503, {
+          ok: false,
+          error: "daemon not ready",
         });
       }
       if (request.method === "GET" && request.url?.startsWith("/tasks")) {
@@ -913,59 +974,83 @@ export class CodelinkDaemon {
     conversationBound: boolean;
     threadId?: string;
   }> {
-    const session = this.requireSession();
-    const toUserId = explicitUserId || session.userId;
+    const sessionAtEnqueue = { ...this.requireSession() };
+    const toUserId = explicitUserId || sessionAtEnqueue.userId;
     if (!toUserId)
       throw new Error("没有默认微信用户；请先扫码登录并从微信发送一条消息");
-    const allowed = new Set(
-      this.config.security.allowedUserIds.length
-        ? this.config.security.allowedUserIds
-        : ([session.userId].filter(Boolean) as string[]),
-    );
-    if (!allowed.has(toUserId))
-      throw new Error(`用户 ${toUserId} 不在 allowedUserIds 中`);
-    const context = this.store.getContextToken(toUserId);
-    if (!context)
-      throw new Error(
-        "没有可用的 context_token；请先从目标微信账号向 CodeLink 发送一条消息",
+    return this.enqueueNotification(toUserId, async () => {
+      const session = this.requireSession();
+      if (!sameWeixinSession(session, sessionAtEnqueue)) {
+        throw new Error("微信会话已在通知排队期间发生变化，请重试");
+      }
+      const allowed = new Set(
+        this.config.security.allowedUserIds.length
+          ? this.config.security.allowedUserIds
+          : ([session.userId].filter(Boolean) as string[]),
       );
-    const threadId = isCodexThreadId(requestedThreadId)
-      ? requestedThreadId
-      : undefined;
-    const previousBinding = this.store.getConversation(toUserId);
-    if (threadId) this.store.bindConversation(toUserId, { threadId });
-    const notificationBinding = threadId
-      ? this.store.getConversation(toUserId)
-      : null;
-    try {
-      const receipt = await this.delivery.sendText({
-        session,
-        toUserId,
-        contextToken: context.contextToken,
-        text: formatTaskNotification(text, Boolean(threadId)),
-      });
-      if (receipt.sentChunks !== receipt.totalChunks) {
+      if (!allowed.has(toUserId))
+        throw new Error(`用户 ${toUserId} 不在 allowedUserIds 中`);
+      const context = this.store.getContextToken(toUserId);
+      if (!context)
         throw new Error(
-          receipt.error ??
-            `微信通知未完整投递（已发送 ${receipt.sentChunks} 段）`,
+          "没有可用的 context_token；请先从目标微信账号向 CodeLink 发送一条消息",
         );
-      }
-    } catch (error) {
-      if (threadId && notificationBinding) {
-        this.store.replaceConversationIfUnchanged(
+      const threadId = isCodexThreadId(requestedThreadId)
+        ? requestedThreadId
+        : undefined;
+      const previousSnapshot = this.store.getConversationSnapshot(toUserId);
+      if (threadId) this.store.bindConversation(toUserId, { threadId });
+      const notificationSnapshot = threadId
+        ? this.store.getConversationSnapshot(toUserId)
+        : null;
+      try {
+        const receipt = await this.delivery.sendText({
+          session,
           toUserId,
-          notificationBinding,
-          previousBinding,
-        );
+          contextToken: context.contextToken,
+          text: formatTaskNotification(text, Boolean(threadId)),
+        });
+        if (receipt.sentChunks !== receipt.totalChunks) {
+          throw new Error(
+            receipt.error ??
+              `微信通知未完整投递（已发送 ${receipt.sentChunks} 段）`,
+          );
+        }
+      } catch (error) {
+        if (threadId && notificationSnapshot) {
+          this.store.replaceConversationSnapshotIfUnchanged(
+            toUserId,
+            notificationSnapshot,
+            previousSnapshot,
+          );
+        }
+        throw error;
       }
-      throw error;
-    }
-    return {
-      ok: true,
-      toUserId,
-      conversationBound: Boolean(threadId),
-      ...(threadId ? { threadId } : {}),
-    };
+      return {
+        ok: true,
+        toUserId,
+        conversationBound: Boolean(threadId),
+        ...(threadId ? { threadId } : {}),
+      };
+    });
+  }
+
+  private enqueueNotification<T>(
+    toUserId: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const previous = this.notificationQueues.get(toUserId) ?? Promise.resolve();
+    const result = previous.catch(() => undefined).then(operation);
+    const tail = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.notificationQueues.set(toUserId, tail);
+    return result.finally(() => {
+      if (this.notificationQueues.get(toUserId) === tail) {
+        this.notificationQueues.delete(toUserId);
+      }
+    });
   }
 
   private requireSession(): WeixinSession {
@@ -979,6 +1064,18 @@ export class CodelinkDaemon {
       "Content-Type": "application/json; charset=utf-8",
     });
     response.end(JSON.stringify(value));
+  }
+
+  private isAuthorized(request: IncomingMessage): boolean {
+    const authorization = request.headers.authorization;
+    if (!authorization) return false;
+    const match = /^Bearer ([A-Za-z0-9_-]+)$/.exec(authorization);
+    if (!match) return false;
+    const provided = Buffer.from(match[1], "utf8");
+    const expected = Buffer.from(this.authToken, "utf8");
+    return (
+      provided.length === expected.length && timingSafeEqual(provided, expected)
+    );
   }
 }
 
@@ -1005,6 +1102,67 @@ function formatTaskNotification(text: string, conversationBound: boolean) {
     ? "—— CodeLink 任务通知\n此任务已设为微信当前 Codex 会话；可直接回复继续，发送 /new 或直接说“开个新会话”开始新会话。"
     : "—— CodeLink 任务通知\n本通知未切换当前 Codex 会话；回复将继续此前已绑定的会话（如有），发送 /new 开始新会话。";
   return `${text.trim()}\n\n${footer}`;
+}
+
+function resolveMessageIdentity(
+  accountId: string,
+  fromUserId: string,
+  message: WeixinMessage,
+): MessageIdentity {
+  const namespace = `weixin:${encodeURIComponent(accountId)}`;
+  if (message.message_id !== undefined && message.message_id !== null) {
+    const value = String(message.message_id);
+    return {
+      current: `${namespace}:message_id:${value}`,
+      legacyTaskId: value,
+    };
+  }
+  if (message.seq !== undefined && message.seq !== null) {
+    const value = String(message.seq);
+    return {
+      current: `${namespace}:seq:${value}`,
+      legacyTaskId: value,
+    };
+  }
+  const digest = createHash("sha256")
+    .update(
+      JSON.stringify({
+        fromUserId: message.from_user_id ?? null,
+        toUserId: message.to_user_id ?? null,
+        messageType: message.message_type ?? null,
+        messageState: message.message_state ?? null,
+        createTimeMs: message.create_time_ms ?? null,
+        items: message.item_list ?? [],
+      }),
+    )
+    .digest("base64url");
+  return {
+    current: `${namespace}:derived:${digest}`,
+    ...(message.create_time_ms !== undefined
+      ? { legacyTaskId: `${fromUserId}-${message.create_time_ms}` }
+      : {}),
+  };
+}
+
+function sameWeixinSession(
+  current: WeixinSession,
+  expected: WeixinSession,
+): boolean {
+  return (
+    current.accountId === expected.accountId &&
+    current.token === expected.token &&
+    current.userId === expected.userId &&
+    current.baseUrl === expected.baseUrl
+  );
+}
+
+function assertLoopbackHost(host: string): void {
+  const normalized = host.trim().toLowerCase();
+  if (normalized === "::1" || normalized === "0:0:0:0:0:0:0:1") {
+    return;
+  }
+  if (isIP(normalized) === 4 && normalized.split(".")[0] === "127") return;
+  throw new Error(`CodeLink daemon host must be loopback, received ${host}`);
 }
 
 function previewText(value: string, max = 500): string {

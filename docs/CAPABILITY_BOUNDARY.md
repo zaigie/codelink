@@ -9,6 +9,7 @@ CodeLink 当前的核心能力是：为每个授权微信用户维护一个“�
 - CodeLink 可以在空状态目录中直接请求腾讯 iLink 二维码并完成登录；
 - 不需要安装、运行或部署 OpenClaw，也不需要复制其 session；
 - 微信凭证只保存在 CodeLink 状态目录；它优先使用 `CODELINK_STATE_DIR`，否则由系统路径 API 解析为当前用户主目录下的 `.codelink`。Unix 文件使用 `0600`，Windows 使用用户配置目录继承的 ACL。
+- 本地 daemon bearer 同样只保存在 CodeLink 状态目录；Unix 首次创建使用 `0600`，Windows 继承用户目录 ACL。
 
 ### 当前会话
 
@@ -16,11 +17,13 @@ CodeLink 当前的核心能力是：为每个授权微信用户维护一个“�
 - 后续普通消息通过 `thread/resume` 继续同一个 thread；
 - 若原任务仍在运行，CodeLink 使用官方 `turn/steer` 把微信回复加入当前 turn；否则使用 `turn/start` 开始下一轮；
 - 绑定保存在 `conversations.json`，每个微信用户相互独立。
+- 更新游标只在整批消息完成持久接受后推进；重放同一消息 ID 不会重复执行 `/status`、`/help`、`/new` 或普通任务。
 
 ### 回复状态与正文
 
 - Codex 处理微信请求期间，CodeLink 通过腾讯公开 iLink `getconfig` / `sendtyping` 协议显示微信原生“正在输入”状态；
 - 状态立即开始、每 5 秒保活，在成功、失败或 daemon 停止时尽力取消；状态接口失败不会阻止 Codex 执行或最终正文；
+- typing 请求缓慢时也不会阻塞任务与 replay ledger 的持久接受、更新游标或后续轮询；
 - 同一用户有多个并发任务时共享一份输入状态，最后一个任务结束后才取消；
 - 普通回复只包含 Codex 正文，不附加消息 ID、thread ID、“当前会话已回复”或“新会话已回复”；
 - 首次没有绑定时自动创建会话，但不显示多余的新会话提示；只有 `/new <请求>` 或明确自然语言切换才提示旧上下文不会带入；
@@ -43,8 +46,10 @@ typing 线协议依据腾讯公开、MIT 授权且随包发布源码的 [`@tence
 - CodeLink 从 Codex 提供给 MCP 调用的可信 `_meta.threadId` 读取调用方 thread，不让模型或用户填写 thread ID；
 - 通知发送前先绑定调用方 thread，微信随后可以直接回复继续；
 - 另一个任务再次通知时，以最近一次成功通知的绑定为准；
+- 同一微信用户的并发通知按完整事务顺序发送，失败时精确恢复此前绑定；不同用户可以并行通知；
 - 较早的微信任务稍后完成时，不会覆盖期间产生的更新绑定；
 - daemon 统一追加任务通知标签和回复说明；
+- 桌面任务主动发送的通知不启动微信“正在输入”状态；
 - 如果当前 Codex 环境没有提供可信 thread 元数据，通知仍可发送，但不会改变当前绑定，并会明确提示降级结果。
 
 `_meta.threadId` 已由当前官方 Codex 客户端真实验证，但尚未写入公开 App Server 文档。CodeLink 因此保留缺失检测和不绑定降级，不把它当作不可变化的永久协议字段。
@@ -68,7 +73,9 @@ CodeLink 新建的微信会话会保存到本机 Codex 存储并返回 thread ID
 - 微信新建的会话统一使用 CodeLink 工作目录；绑定的桌面任务保持原项目、上下文和设置；
 - 核心运行时面向官方 Codex 与 Node.js 22 覆盖的 macOS、Linux、Windows x64/arm64；macOS 已实机运行，Linux/Windows 安装器仍待对应系统首轮实机回归；
 - 自动常驻分别使用 macOS LaunchAgent、Linux systemd user service 和 Windows 当前用户 Scheduled Task；非 systemd Linux 需要用户已有的进程管理器；
-- 本地 daemon API 只应监听 loopback 地址。
+- 本地 daemon API 强制监听 literal loopback IP，并要求同一安装实例的 bearer；缺失或错误凭证返回 `401`。
+- daemon 仅在微信轮询成功后就绪；初始状态或轮询错误期间，已认证业务请求返回 `503`。
+- 未授权微信消息不会保存上下文或 replay 状态，拒绝日志不包含用户 ID 或 token。
 
 ## 验收标准
 
@@ -81,7 +88,8 @@ CodeLink 新建的微信会话会保存到本机 Codex 存储并返回 thread ID
 7. 较早任务在新绑定之后完成时，不会把当前会话切回去；
 8. daemon 重启后仍能从保存的 thread ID 继续；
 9. 长任务显示临时“正在输入”，普通最终回复不暴露内部 ID 或运行标签；
-10. MCP 和日志不暴露 bot token、context token 或 typing ticket；
-11. 两个新建 thread 的 ID 不同且 cwd 都等于同一个 CodeLink 工作目录，不再生成时间戳项目。
+10. MCP 和日志不暴露 bot token、context token、typing ticket 或 daemon bearer；
+11. 两个新建 thread 的 ID 不同且 cwd 都等于同一个 CodeLink 工作目录，不再生成时间戳项目；
+12. 未认证本地请求返回 `401`，非就绪业务请求返回 `503`，成功轮询后恢复。
 
 微信新建会话是否出现在 Codex App 侧栏不作为验收项。

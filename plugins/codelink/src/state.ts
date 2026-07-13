@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -78,8 +79,16 @@ type ConversationState = {
   generations: Record<string, number>;
 };
 
+type ProcessedMessageState = {
+  messageIds: string[];
+};
+
+const MAX_PROCESSED_MESSAGE_IDS = 5_000;
+const DAEMON_AUTH_TOKEN_FILE = "daemon-api-token";
+
 export class StateStore {
   readonly dir: string;
+  private processedMessages?: { messageIds: string[]; index: Set<string> };
 
   constructor(dir = resolveStateDir()) {
     this.dir = dir;
@@ -133,6 +142,78 @@ export class StateStore {
 
   saveSyncCursor(cursor: string): void {
     this.writeJson("get-updates.json", { get_updates_buf: cursor }, 0o600);
+  }
+
+  loadDaemonAuthToken(): string | null {
+    this.ensure();
+    try {
+      const token = fs
+        .readFileSync(this.path(DAEMON_AUTH_TOKEN_FILE), "utf8")
+        .trim();
+      if (!token) throw new Error("daemon API credential file is empty");
+      return token;
+    } catch (error) {
+      if (isNodeError(error) && error.code === "ENOENT") return null;
+      throw error;
+    }
+  }
+
+  getOrCreateDaemonAuthToken(): string {
+    const existing = this.loadDaemonAuthToken();
+    if (existing) return existing;
+
+    const token = randomBytes(32).toString("base64url");
+    const destination = this.path(DAEMON_AUTH_TOKEN_FILE);
+    const temporary = this.path(
+      `${DAEMON_AUTH_TOKEN_FILE}.${process.pid}.${randomBytes(8).toString("hex")}.tmp`,
+    );
+    fs.writeFileSync(temporary, `${token}\n`, {
+      encoding: "utf8",
+      flag: "wx",
+      mode: 0o600,
+    });
+    try {
+      try {
+        fs.linkSync(temporary, destination);
+        try {
+          fs.chmodSync(destination, 0o600);
+        } catch {
+          // Windows relies on the user's state-directory ACL.
+        }
+        return token;
+      } catch (error) {
+        if (!isNodeError(error) || error.code !== "EEXIST") throw error;
+        const winner = this.loadDaemonAuthToken();
+        if (!winner) throw new Error("daemon API credential creation lost");
+        return winner;
+      }
+    } finally {
+      fs.rmSync(temporary, { force: true });
+    }
+  }
+
+  hasProcessedMessage(messageId: string): boolean {
+    return this.loadProcessedMessages().index.has(messageId);
+  }
+
+  markProcessedMessage(messageId: string): boolean {
+    const cache = this.loadProcessedMessages();
+    if (cache.index.has(messageId)) return false;
+    cache.messageIds.push(messageId);
+    cache.index.add(messageId);
+    if (cache.messageIds.length > MAX_PROCESSED_MESSAGE_IDS) {
+      const evicted = cache.messageIds.splice(
+        0,
+        cache.messageIds.length - MAX_PROCESSED_MESSAGE_IDS,
+      );
+      for (const evictedId of evicted) cache.index.delete(evictedId);
+    }
+    this.writeJson(
+      "processed-messages.json",
+      { messageIds: cache.messageIds },
+      0o600,
+    );
+    return true;
   }
 
   loadContextTokens(): Record<string, ContextTokenRecord> {
@@ -234,6 +315,34 @@ export class StateStore {
     return true;
   }
 
+  replaceConversationSnapshotIfUnchanged(
+    userId: string,
+    expected: ConversationSnapshot,
+    replacement: ConversationSnapshot,
+  ): boolean {
+    const state = this.loadConversationState();
+    const current = state.conversations[userId] ?? null;
+    const currentGeneration = state.generations[userId] ?? 0;
+    if (
+      currentGeneration !== expected.generation ||
+      !sameConversationBinding(current, expected.binding)
+    ) {
+      return false;
+    }
+    if (replacement.binding) {
+      state.conversations[userId] = { ...replacement.binding };
+    } else {
+      delete state.conversations[userId];
+    }
+    if (replacement.generation === 0) {
+      delete state.generations[userId];
+    } else {
+      state.generations[userId] = replacement.generation;
+    }
+    this.writeJson("conversations.json", state, 0o600);
+    return true;
+  }
+
   clearConversation(userId: string): void {
     const state = this.loadConversationState();
     delete state.conversations[userId];
@@ -308,6 +417,31 @@ export class StateStore {
     };
   }
 
+  private loadProcessedMessageState(): ProcessedMessageState {
+    const data = this.readJson(
+      "processed-messages.json",
+    ) as ProcessedMessageState | null;
+    return {
+      messageIds: Array.isArray(data?.messageIds)
+        ? data.messageIds.filter(
+            (messageId): messageId is string => typeof messageId === "string",
+          )
+        : [],
+    };
+  }
+
+  // 单 daemon 进程独占状态目录，因此缓存不需要跨进程失效。
+  private loadProcessedMessages(): { messageIds: string[]; index: Set<string> } {
+    if (!this.processedMessages) {
+      const state = this.loadProcessedMessageState();
+      this.processedMessages = {
+        messageIds: state.messageIds,
+        index: new Set(state.messageIds),
+      };
+    }
+    return this.processedMessages;
+  }
+
   private readJson(name: string): unknown | null {
     this.ensure();
     try {
@@ -350,4 +484,8 @@ function nextConversationUpdatedAt(
     ? Math.max(Date.now(), previous + 1)
     : Date.now();
   return new Date(timestamp).toISOString();
+}
+
+function isNodeError(error: unknown): error is NodeJS.ErrnoException {
+  return error instanceof Error && "code" in error;
 }

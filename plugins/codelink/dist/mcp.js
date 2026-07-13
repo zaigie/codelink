@@ -3224,8 +3224,8 @@ var require_utils = __commonJS({
       }
       return ind;
     }
-    function removeDotSegments(path2) {
-      let input = path2;
+    function removeDotSegments(path4) {
+      let input = path4;
       const output = [];
       let nextSlash = -1;
       let len = 0;
@@ -3477,8 +3477,8 @@ var require_schemes = __commonJS({
         wsComponent.secure = void 0;
       }
       if (wsComponent.resourceName) {
-        const [path2, query] = wsComponent.resourceName.split("?");
-        wsComponent.path = path2 && path2 !== "/" ? path2 : void 0;
+        const [path4, query] = wsComponent.resourceName.split("?");
+        wsComponent.path = path4 && path4 !== "/" ? path4 : void 0;
         wsComponent.query = query;
         wsComponent.resourceName = void 0;
       }
@@ -6871,12 +6871,12 @@ var require_dist = __commonJS({
         throw new Error(`Unknown format "${name}"`);
       return f;
     };
-    function addFormats(ajv, list, fs, exportName) {
+    function addFormats(ajv, list, fs2, exportName) {
       var _a2;
       var _b;
       (_a2 = (_b = ajv.opts.code).formats) !== null && _a2 !== void 0 ? _a2 : _b.formats = (0, codegen_1._)`require("ajv-formats/dist/formats").${exportName}`;
       for (const f of list)
-        ajv.addFormat(f, fs[f]);
+        ajv.addFormat(f, fs2[f]);
     }
     module.exports = exports = formatsPlugin;
     Object.defineProperty(exports, "__esModule", { value: true });
@@ -6885,7 +6885,7 @@ var require_dist = __commonJS({
 });
 
 // src/mcp.ts
-import path from "node:path";
+import path3 from "node:path";
 import { pathToFileURL } from "node:url";
 
 // node_modules/zod/v3/helpers/util.js
@@ -7247,8 +7247,8 @@ function getErrorMap() {
 
 // node_modules/zod/v3/helpers/parseUtil.js
 var makeIssue = (params) => {
-  const { data, path: path2, errorMaps, issueData } = params;
-  const fullPath = [...path2, ...issueData.path || []];
+  const { data, path: path4, errorMaps, issueData } = params;
+  const fullPath = [...path4, ...issueData.path || []];
   const fullIssue = {
     ...issueData,
     path: fullPath
@@ -7363,11 +7363,11 @@ var errorUtil;
 
 // node_modules/zod/v3/types.js
 var ParseInputLazyPath = class {
-  constructor(parent, value, path2, key) {
+  constructor(parent, value, path4, key) {
     this._cachedPath = [];
     this.parent = parent;
     this.data = value;
-    this._path = path2;
+    this._path = path4;
     this._key = key;
   }
   get path() {
@@ -11291,10 +11291,10 @@ function mergeDefs(...defs) {
 function cloneDef(schema) {
   return mergeDefs(schema._zod.def);
 }
-function getElementAtPath(obj, path2) {
-  if (!path2)
+function getElementAtPath(obj, path4) {
+  if (!path4)
     return obj;
-  return path2.reduce((acc, key) => acc?.[key], obj);
+  return path4.reduce((acc, key) => acc?.[key], obj);
 }
 function promiseAllObject(promisesObj) {
   const keys = Object.keys(promisesObj);
@@ -11677,11 +11677,11 @@ function aborted(x, startIndex = 0) {
   }
   return false;
 }
-function prefixIssues(path2, issues) {
+function prefixIssues(path4, issues) {
   return issues.map((iss) => {
     var _a2;
     (_a2 = iss).path ?? (_a2.path = []);
-    iss.path.unshift(path2);
+    iss.path.unshift(path4);
     return iss;
   });
 }
@@ -11864,7 +11864,7 @@ function formatError(error48, mapper = (issue2) => issue2.message) {
 }
 function treeifyError(error48, mapper = (issue2) => issue2.message) {
   const result = { errors: [] };
-  const processError = (error49, path2 = []) => {
+  const processError = (error49, path4 = []) => {
     var _a2, _b;
     for (const issue2 of error49.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
@@ -11874,7 +11874,7 @@ function treeifyError(error48, mapper = (issue2) => issue2.message) {
       } else if (issue2.code === "invalid_element") {
         processError({ issues: issue2.issues }, issue2.path);
       } else {
-        const fullpath = [...path2, ...issue2.path];
+        const fullpath = [...path4, ...issue2.path];
         if (fullpath.length === 0) {
           result.errors.push(mapper(issue2));
           continue;
@@ -11906,8 +11906,8 @@ function treeifyError(error48, mapper = (issue2) => issue2.message) {
 }
 function toDotPath(_path) {
   const segs = [];
-  const path2 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
-  for (const seg of path2) {
+  const path4 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
+  for (const seg of path4) {
     if (typeof seg === "number")
       segs.push(`[${seg}]`);
     else if (typeof seg === "symbol")
@@ -24313,13 +24313,13 @@ function resolveRef(ref, ctx) {
   if (!ref.startsWith("#")) {
     throw new Error("External $ref is not supported, only local refs (#/...) are allowed");
   }
-  const path2 = ref.slice(1).split("/").filter(Boolean);
-  if (path2.length === 0) {
+  const path4 = ref.slice(1).split("/").filter(Boolean);
+  if (path4.length === 0) {
     return ctx.rootSchema;
   }
   const defsKey = ctx.version === "draft-2020-12" ? "$defs" : "definitions";
-  if (path2[0] === defsKey) {
-    const key = path2[1];
+  if (path4[0] === defsKey) {
+    const key = path4[1];
     if (!key || !ctx.defs[key]) {
       throw new Error(`Reference not found: ${ref}`);
     }
@@ -30204,40 +30204,433 @@ var StdioServerTransport = class {
   }
 };
 
+// src/state.ts
+import { randomBytes } from "node:crypto";
+import fs from "node:fs";
+import path2 from "node:path";
+
+// src/config.ts
+import os from "node:os";
+import path from "node:path";
+function resolveStateDir() {
+  return process.env.CODELINK_STATE_DIR?.trim() || path.join(os.homedir(), ".codelink");
+}
+function defaultConfig() {
+  return {
+    daemon: {
+      host: "127.0.0.1",
+      port: 18791
+    },
+    weixin: {
+      baseUrl: "https://ilinkai.weixin.qq.com",
+      botType: "3",
+      channelVersion: "2.4.6",
+      botAgent: "CodeLink/0.1.0"
+    },
+    codex: {
+      taskWorkspaceRoot: path.join(
+        os.homedir(),
+        "Documents",
+        "Codex",
+        "CodeLink"
+      ),
+      sandboxMode: "workspace-write",
+      approvalPolicy: "never",
+      networkAccessEnabled: false
+    },
+    security: {
+      allowedUserIds: []
+    }
+  };
+}
+function mergeConfig(base, value) {
+  return {
+    daemon: { ...base.daemon, ...value.daemon },
+    weixin: { ...base.weixin, ...value.weixin },
+    codex: { ...base.codex, ...value.codex },
+    security: { ...base.security, ...value.security }
+  };
+}
+function parseConfig(value) {
+  if (!value || typeof value !== "object") return defaultConfig();
+  return mergeConfig(defaultConfig(), value);
+}
+
+// src/state.ts
+var MAX_PROCESSED_MESSAGE_IDS = 5e3;
+var DAEMON_AUTH_TOKEN_FILE = "daemon-api-token";
+var StateStore = class {
+  dir;
+  processedMessages;
+  constructor(dir = resolveStateDir()) {
+    this.dir = dir;
+  }
+  ensure() {
+    fs.mkdirSync(this.dir, { recursive: true, mode: 448 });
+    try {
+      fs.chmodSync(this.dir, 448);
+    } catch {
+    }
+  }
+  path(name) {
+    return path2.join(this.dir, name);
+  }
+  loadConfig() {
+    return parseConfig(this.readJson("config.json"));
+  }
+  saveConfig(config2) {
+    this.writeJson("config.json", config2, 384);
+  }
+  loadSession() {
+    return this.readJson("weixin-session.json");
+  }
+  saveSession(session) {
+    this.writeJson("weixin-session.json", session, 384);
+  }
+  loadInstallReceipt() {
+    return this.readJson("install-receipt.json");
+  }
+  saveInstallReceipt(receipt) {
+    this.writeJson("install-receipt.json", receipt, 384);
+  }
+  loadSyncCursor() {
+    const data = this.readJson("get-updates.json");
+    return typeof data?.get_updates_buf === "string" ? data.get_updates_buf : "";
+  }
+  saveSyncCursor(cursor) {
+    this.writeJson("get-updates.json", { get_updates_buf: cursor }, 384);
+  }
+  loadDaemonAuthToken() {
+    this.ensure();
+    try {
+      const token = fs.readFileSync(this.path(DAEMON_AUTH_TOKEN_FILE), "utf8").trim();
+      if (!token) throw new Error("daemon API credential file is empty");
+      return token;
+    } catch (error48) {
+      if (isNodeError(error48) && error48.code === "ENOENT") return null;
+      throw error48;
+    }
+  }
+  getOrCreateDaemonAuthToken() {
+    const existing = this.loadDaemonAuthToken();
+    if (existing) return existing;
+    const token = randomBytes(32).toString("base64url");
+    const destination = this.path(DAEMON_AUTH_TOKEN_FILE);
+    const temporary = this.path(
+      `${DAEMON_AUTH_TOKEN_FILE}.${process.pid}.${randomBytes(8).toString("hex")}.tmp`
+    );
+    fs.writeFileSync(temporary, `${token}
+`, {
+      encoding: "utf8",
+      flag: "wx",
+      mode: 384
+    });
+    try {
+      try {
+        fs.linkSync(temporary, destination);
+        try {
+          fs.chmodSync(destination, 384);
+        } catch {
+        }
+        return token;
+      } catch (error48) {
+        if (!isNodeError(error48) || error48.code !== "EEXIST") throw error48;
+        const winner = this.loadDaemonAuthToken();
+        if (!winner) throw new Error("daemon API credential creation lost");
+        return winner;
+      }
+    } finally {
+      fs.rmSync(temporary, { force: true });
+    }
+  }
+  hasProcessedMessage(messageId) {
+    return this.loadProcessedMessages().index.has(messageId);
+  }
+  markProcessedMessage(messageId) {
+    const cache = this.loadProcessedMessages();
+    if (cache.index.has(messageId)) return false;
+    cache.messageIds.push(messageId);
+    cache.index.add(messageId);
+    if (cache.messageIds.length > MAX_PROCESSED_MESSAGE_IDS) {
+      const evicted = cache.messageIds.splice(
+        0,
+        cache.messageIds.length - MAX_PROCESSED_MESSAGE_IDS
+      );
+      for (const evictedId of evicted) cache.index.delete(evictedId);
+    }
+    this.writeJson(
+      "processed-messages.json",
+      { messageIds: cache.messageIds },
+      384
+    );
+    return true;
+  }
+  loadContextTokens() {
+    const data = this.readJson("context-tokens.json");
+    return data && typeof data === "object" ? data : {};
+  }
+  saveContextToken(userId, contextToken) {
+    const tokens = this.loadContextTokens();
+    tokens[userId] = { contextToken, updatedAt: (/* @__PURE__ */ new Date()).toISOString() };
+    this.writeJson("context-tokens.json", tokens, 384);
+  }
+  importContextTokens(tokens) {
+    const existing = this.loadContextTokens();
+    let count = 0;
+    for (const [userId, contextToken] of Object.entries(tokens)) {
+      if (!userId.trim() || !contextToken.trim()) continue;
+      existing[userId] = {
+        contextToken,
+        updatedAt: (/* @__PURE__ */ new Date()).toISOString()
+      };
+      count += 1;
+    }
+    this.writeJson("context-tokens.json", existing, 384);
+    return count;
+  }
+  getContextToken(userId) {
+    return this.loadContextTokens()[userId] ?? null;
+  }
+  getConversation(userId) {
+    return this.loadConversationState().conversations[userId] ?? null;
+  }
+  getConversationSnapshot(userId) {
+    const state = this.loadConversationState();
+    return {
+      binding: state.conversations[userId] ?? null,
+      generation: state.generations[userId] ?? 0
+    };
+  }
+  bindConversation(userId, binding) {
+    const state = this.loadConversationState();
+    const current = state.conversations[userId] ?? null;
+    state.conversations[userId] = {
+      threadId: binding.threadId,
+      updatedAt: nextConversationUpdatedAt(current)
+    };
+    state.generations[userId] = (state.generations[userId] ?? 0) + 1;
+    this.writeJson("conversations.json", state, 384);
+  }
+  bindConversationIfUnchanged(userId, expected, threadId, expectedGeneration) {
+    return this.replaceConversationIfUnchanged(
+      userId,
+      expected,
+      { threadId },
+      expectedGeneration
+    );
+  }
+  replaceConversationIfUnchanged(userId, expected, replacement, expectedGeneration) {
+    const state = this.loadConversationState();
+    const current = state.conversations[userId] ?? null;
+    if (expectedGeneration !== void 0 && (state.generations[userId] ?? 0) !== expectedGeneration)
+      return false;
+    if (!sameConversationBinding(current, expected)) return false;
+    if (replacement) {
+      state.conversations[userId] = {
+        threadId: replacement.threadId,
+        updatedAt: nextConversationUpdatedAt(current)
+      };
+    } else {
+      delete state.conversations[userId];
+    }
+    state.generations[userId] = (state.generations[userId] ?? 0) + 1;
+    this.writeJson("conversations.json", state, 384);
+    return true;
+  }
+  replaceConversationSnapshotIfUnchanged(userId, expected, replacement) {
+    const state = this.loadConversationState();
+    const current = state.conversations[userId] ?? null;
+    const currentGeneration = state.generations[userId] ?? 0;
+    if (currentGeneration !== expected.generation || !sameConversationBinding(current, expected.binding)) {
+      return false;
+    }
+    if (replacement.binding) {
+      state.conversations[userId] = { ...replacement.binding };
+    } else {
+      delete state.conversations[userId];
+    }
+    if (replacement.generation === 0) {
+      delete state.generations[userId];
+    } else {
+      state.generations[userId] = replacement.generation;
+    }
+    this.writeJson("conversations.json", state, 384);
+    return true;
+  }
+  clearConversation(userId) {
+    const state = this.loadConversationState();
+    delete state.conversations[userId];
+    state.generations[userId] = (state.generations[userId] ?? 0) + 1;
+    this.writeJson("conversations.json", state, 384);
+  }
+  listTasks(limit = 20) {
+    const state = this.loadTaskState();
+    return state.tasks.slice(-Math.max(1, limit)).reverse();
+  }
+  findTask(messageId) {
+    return this.loadTaskState().tasks.find((task) => task.messageId === messageId) ?? null;
+  }
+  acceptTask(record2) {
+    const state = this.loadTaskState();
+    if (state.tasks.some((task) => task.messageId === record2.messageId))
+      return false;
+    state.tasks.push(record2);
+    state.tasks = state.tasks.slice(-500);
+    this.writeJson("tasks.json", state, 384);
+    return true;
+  }
+  updateTask(messageId, update) {
+    const state = this.loadTaskState();
+    const index = state.tasks.findIndex(
+      (task) => task.messageId === messageId
+    );
+    if (index < 0) return null;
+    const next = update(state.tasks[index]);
+    state.tasks[index] = next;
+    this.writeJson("tasks.json", state, 384);
+    return next;
+  }
+  upsertTask(record2) {
+    const state = this.loadTaskState();
+    const index = state.tasks.findIndex(
+      (task) => task.messageId === record2.messageId
+    );
+    if (index >= 0) state.tasks[index] = record2;
+    else state.tasks.push(record2);
+    state.tasks = state.tasks.slice(-500);
+    this.writeJson("tasks.json", state, 384);
+  }
+  loadTaskState() {
+    const data = this.readJson("tasks.json");
+    return { tasks: Array.isArray(data?.tasks) ? data.tasks : [] };
+  }
+  loadConversationState() {
+    const data = this.readJson("conversations.json");
+    return {
+      conversations: data?.conversations && typeof data.conversations === "object" ? data.conversations : {},
+      generations: data?.generations && typeof data.generations === "object" ? data.generations : {}
+    };
+  }
+  loadProcessedMessageState() {
+    const data = this.readJson(
+      "processed-messages.json"
+    );
+    return {
+      messageIds: Array.isArray(data?.messageIds) ? data.messageIds.filter(
+        (messageId) => typeof messageId === "string"
+      ) : []
+    };
+  }
+  // 单 daemon 进程独占状态目录，因此缓存不需要跨进程失效。
+  loadProcessedMessages() {
+    if (!this.processedMessages) {
+      const state = this.loadProcessedMessageState();
+      this.processedMessages = {
+        messageIds: state.messageIds,
+        index: new Set(state.messageIds)
+      };
+    }
+    return this.processedMessages;
+  }
+  readJson(name) {
+    this.ensure();
+    try {
+      return JSON.parse(fs.readFileSync(this.path(name), "utf8"));
+    } catch {
+      return null;
+    }
+  }
+  writeJson(name, value, mode) {
+    this.ensure();
+    const destination = this.path(name);
+    const temporary = `${destination}.${process.pid}.tmp`;
+    fs.writeFileSync(temporary, `${JSON.stringify(value, null, 2)}
+`, {
+      encoding: "utf8",
+      mode
+    });
+    fs.renameSync(temporary, destination);
+    try {
+      fs.chmodSync(destination, mode);
+    } catch {
+    }
+  }
+};
+function sameConversationBinding(left, right) {
+  if (!left || !right) return left === right;
+  return left.threadId === right.threadId && left.updatedAt === right.updatedAt;
+}
+function nextConversationUpdatedAt(current) {
+  const previous = current ? Date.parse(current.updatedAt) : Number.NaN;
+  const timestamp = Number.isFinite(previous) ? Math.max(Date.now(), previous + 1) : Date.now();
+  return new Date(timestamp).toISOString();
+}
+function isNodeError(error48) {
+  return error48 instanceof Error && "code" in error48;
+}
+
 // src/daemon-client.ts
-var DaemonClient = class {
+var DaemonClient = class _DaemonClient {
   baseUrl;
   fetchImpl;
+  store;
+  authToken;
+  static READ_TIMEOUT_MS = 1e4;
+  static SEND_TIMEOUT_MS = 10 * 6e4;
   constructor(options = {}) {
     this.baseUrl = options.baseUrl ?? process.env.CODELINK_DAEMON_URL ?? "http://127.0.0.1:18791";
     this.fetchImpl = options.fetchImpl ?? fetch;
+    this.store = options.store ?? new StateStore();
+    this.authToken = options.authToken?.trim() || void 0;
   }
   async status() {
-    return this.request("/health", { method: "GET" }, true);
+    return this.request(
+      "/health",
+      { method: "GET" },
+      _DaemonClient.READ_TIMEOUT_MS,
+      true
+    );
   }
   async health() {
-    return this.request("/healthz", { method: "GET" }, true);
+    return this.request(
+      "/healthz",
+      { method: "GET" },
+      _DaemonClient.READ_TIMEOUT_MS,
+      true
+    );
   }
   async recentTasks() {
-    return this.request("/tasks", { method: "GET" });
+    return this.request(
+      "/tasks",
+      { method: "GET" },
+      _DaemonClient.READ_TIMEOUT_MS
+    );
   }
   async send(request) {
-    return this.request("/send", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        text: request.text,
-        ...request.userId ? { userId: request.userId } : {},
-        ...request.threadId ? { threadId: request.threadId } : {}
-      })
-    });
+    return this.request(
+      "/send",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          text: request.text,
+          ...request.userId ? { userId: request.userId } : {},
+          ...request.threadId ? { threadId: request.threadId } : {}
+        })
+      },
+      _DaemonClient.SEND_TIMEOUT_MS
+    );
   }
-  async request(pathname, init, returnErrorBody = false) {
+  async request(pathname, init, timeoutMs, returnErrorBody = false) {
+    const authToken = this.authToken ?? (this.authToken = this.store.getOrCreateDaemonAuthToken());
+    const headers = new Headers(init.headers);
+    headers.set("Authorization", `Bearer ${authToken}`);
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 1e4);
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const response = await this.fetchImpl(new URL(pathname, this.baseUrl), {
         ...init,
+        headers,
         signal: controller.signal
       });
       const text = await response.text();
@@ -30346,7 +30739,7 @@ async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }
-var isMain = process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url;
+var isMain = process.argv[1] && pathToFileURL(path3.resolve(process.argv[1])).href === import.meta.url;
 if (isMain) {
   main().catch((error48) => {
     process.stderr.write(

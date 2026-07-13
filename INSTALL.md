@@ -9,7 +9,7 @@
 - 首次安装直接使用 CodeLink 的腾讯 iLink 登录，展示二维码并等待用户扫码；
 - 默认把源码放在当前用户主目录下的 `.codelink/source`（Windows 路径由 PowerShell 的 `Join-Path` 生成），而不是临时工作区；
 - 使用同一个 Node 跨平台安装器，再按系统注册用户态后台服务；
-- 任何输出、日志、截图、提交和聊天消息都不得包含 bot token、context token 或完整 session。
+- 任何输出、日志、截图、提交和聊天消息都不得包含 bot token、context token、本地 daemon bearer token 或完整 session。
 
 ## 支持范围
 
@@ -95,7 +95,7 @@ node <源码目录>/plugins/codelink/scripts/setup.mjs
 2. 添加当前持久源码为本地 marketplace，并安装 `codelink` 插件；
 3. 若没有现有 CodeLink session，启动腾讯 iLink 登录；
 4. 复制最小运行时到状态目录的 `runtime` 子目录；状态目录优先使用 `CODELINK_STATE_DIR`，否则使用当前用户主目录下的 `.codelink`；随后注册当前系统的用户态后台服务；
-5. 通过不含用户标识的 `127.0.0.1:18791/healthz` 验证 daemon。
+5. 通过不含用户标识的 `127.0.0.1:18791/healthz` 验证 daemon；其余业务接口需要安装级 bearer 凭证，由 CLI 和插件自动携带，不进入命令参数。
 
 登录期间，安装器使用 PNG-only 模式在状态目录生成 `login-qr.png`；状态目录优先使用 `CODELINK_STATE_DIR`，否则由系统路径 API 解析为当前用户主目录下的 `.codelink`。Codex 必须立即读取该 PNG，并把二维码图片直接发在当前主会话中，然后暂停等待扫码。不能只打印文件路径、备用链接或终端二维码，也不能让用户展开执行过程才能看到图片；不得把二维码内容解析成文本输出。二维码内容不会写入安装终端日志，登录成功或超时后会清理 PNG。已有 `weixin-session.json` 时安装器会保留登录态并跳过扫码。
 
@@ -112,7 +112,7 @@ node <源码目录>/plugins/codelink/scripts/setup.mjs
 
 安装完成后至少验证：
 
-1. 后台服务健康，且只监听 loopback；
+1. 后台服务已完成微信轮询、只监听 loopback IP，且本地 HTTP 请求必须携带安装级 bearer；
 2. 新建一个 Codex 任务，使新插件和 MCP 生效；
 3. 在 Codex 中说“检查 CodeLink 微信连接和当前会话状态”；
 4. 微信发送 `/status`；
@@ -146,7 +146,7 @@ node (Join-Path $StateDir "runtime\cli.cjs") doctor
 
 `daemonHealthy=true` 只说明后台与微信轮询正常；`pluginInstalled` 和 `mcpBundleReady` 说明插件及 MCP bundle 已安装。Codex 任务中的工具加载仍以“新建任务”为边界；新任务仍看不到 CodeLink 时，重启 Codex App 后再检查。
 
-检查服务状态时不要输出健康接口中的用户 ID，也不要读取或展示 session 文件内容。
+检查服务状态时使用 `node <源码目录>/plugins/codelink/dist/cli.cjs status`；查看状态路径可用同目录 CLI 的 `state` 命令。不要直接拼接 bearer 调用 HTTP，不要输出健康状态中的用户 ID，也不要读取或展示 `weixin-session.json`、`context-tokens.json` 或 `daemon-api-token` 内容。
 
 | 系统 | 状态与日志 |
 | --- | --- |
@@ -184,7 +184,7 @@ Windows: powershell -NoProfile -ExecutionPolicy Bypass -File <源码目录>\plug
 
 ### 后台服务没有启动
 
-按上表查看当前平台的服务状态和日志。常见原因是交互式终端使用了临时 Node/Codex 路径、端口 `18791` 被占用，或用户会话的 systemd/Task Scheduler 不可用。统一安装器已固定当前 Node 与 Codex 的绝对路径；修复环境后重新运行即可。
+先运行 `node <源码目录>/plugins/codelink/dist/cli.cjs status`，再按上表查看当前平台的服务状态和日志。常见原因是交互式终端使用了临时 Node/Codex 路径、端口 `18791` 被占用、微信轮询尚未成功，或用户会话的 systemd/Task Scheduler 不可用。统一安装器已固定当前 Node 与 Codex 的绝对路径；修复环境后重新运行即可。
 
 ### 二维码问题
 
