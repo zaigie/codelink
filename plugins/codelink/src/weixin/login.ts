@@ -4,8 +4,11 @@ import readline from "node:readline/promises";
 import QRCode from "qrcode";
 import qrcodeTerminal from "qrcode-terminal";
 
+import { delay } from "../delay.js";
 import { StateStore, WeixinSession } from "../state.js";
 import { WeixinClient } from "./client.js";
+
+const LOGIN_POLL_DELAY_MS = 1_000;
 
 export type LoginProgress = {
   qrPath: string;
@@ -78,8 +81,12 @@ export async function loginWithQr(params: {
           );
       verifyCode = undefined;
     } catch (error) {
+      // AbortError 是 35 秒长轮询的正常到期，立即重试；其余失败退避后重试。
       if (error instanceof Error && error.name === "AbortError") continue;
-      process.stderr.write(`二维码状态查询失败，将重试：${String(error)}\n`);
+      process.stderr.write(
+        `二维码状态查询失败，将重试：${String(error)}\n`,
+      );
+      await delay(LOGIN_POLL_DELAY_MS);
       continue;
     }
 
@@ -126,9 +133,19 @@ export async function loginWithQr(params: {
         };
         params.store.saveSession(session);
         const config = params.store.loadConfig();
-        if (session.userId && config.security.allowedUserIds.length === 0) {
-          config.security.allowedUserIds = [session.userId];
-          params.store.saveConfig(config);
+        if (session.userId) {
+          const allowedUserIds = config.security.allowedUserIds;
+          const previousOwnerWasDefault =
+            Boolean(existing?.userId) &&
+            allowedUserIds.length === 1 &&
+            allowedUserIds[0] === existing?.userId;
+          if (previousOwnerWasDefault && allowedUserIds[0] !== session.userId) {
+            config.security.allowedUserIds = [session.userId];
+            params.store.saveConfig(config);
+          } else if (!allowedUserIds.includes(session.userId)) {
+            allowedUserIds.push(session.userId);
+            params.store.saveConfig(config);
+          }
         }
         removeQrFile(qrPath);
         process.stdout.write("登录成功。\n");
@@ -160,10 +177,14 @@ export async function loginWithQr(params: {
         currentBaseUrl = undefined;
         verifyCode = undefined;
         await publishQr(qr.qrcode_img_content);
-        break;
+        // 刷新后同样退避：服务端若对新码持续返回 expired，不应形成
+        // 高频拉码 + 反复写 PNG 的无退避热循环。
+        await delay(LOGIN_POLL_DELAY_MS);
+        continue;
       case "verify_code_blocked":
         throw new Error("配对码验证被暂时阻止，请稍后重新登录");
     }
+    await delay(LOGIN_POLL_DELAY_MS);
   }
 
   removeQrFile(qrPath);
@@ -193,3 +214,4 @@ function normalizeBaseUrl(value: string): string {
     ? trimmed
     : `https://${trimmed}`;
 }
+
