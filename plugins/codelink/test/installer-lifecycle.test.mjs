@@ -65,7 +65,7 @@ describe("共享卸载生命周期", () => {
     ]);
   });
 
-  it("只把精确 marketplace absent 当作幂等成功", () => {
+  it("按稳定错误标志把 marketplace absent 当作幂等成功", () => {
     let installed = true;
     let cleanupCount = 0;
     const run = () =>
@@ -88,6 +88,7 @@ describe("共享卸载生命周期", () => {
     expect(run).not.toThrow();
     expect(cleanupCount).toBe(2);
 
+    // 版本间措辞轻微变化（如结尾标点）仍按 absent 处理。
     expect(() =>
       uninstallLifecycle({
         runServicePhase: () => success(),
@@ -97,7 +98,37 @@ describe("共享卸载生命周期", () => {
             : failure(`${MARKETPLACE_ABSENT_ERROR}.`);
         },
       }),
+    ).not.toThrow();
+
+    // 不含 absent 标志的真实错误仍然 fail-closed。
+    expect(() =>
+      uninstallLifecycle({
+        runServicePhase: () => success(),
+        runCodex(args) {
+          return args[1] === "remove"
+            ? success()
+            : failure("Error: permission denied while removing marketplace");
+        },
+      }),
     ).toThrow("移除 CodeLink marketplace");
+  });
+
+  it("没有可用 Codex 时仍停止服务并清理 runtime，只跳过插件步骤", () => {
+    const calls = [];
+    const skipped = [];
+
+    uninstallLifecycle({
+      runServicePhase(phase) {
+        calls.push(`service:${phase}`);
+        return success();
+      },
+      onSkip(step) {
+        skipped.push(step);
+      },
+    });
+
+    expect(calls).toEqual(["service:stop", "service:cleanup"]);
+    expect(skipped).toEqual(["移除 CodeLink 插件与 marketplace"]);
   });
 
   it.each([
@@ -170,10 +201,10 @@ describe("共享卸载生命周期", () => {
       const nearAbsent = fixture.run({
         FAKE_SERVICE_FAILURE: "near-absent",
       });
-      expect(nearAbsent.status).not.toBe(0);
-      expect(nearAbsent.stderr).toContain("No such process (unexpected)");
-      expect(fs.existsSync(fixture.plistPath)).toBe(true);
-      expect(fs.existsSync(fixture.runtimeDir)).toBe(true);
+      // launchctl 的 absent 判定按「No such process」标志容忍措辞漂移。
+      expect(nearAbsent.status).toBe(0);
+      expect(fs.existsSync(fixture.plistPath)).toBe(false);
+      expect(fs.existsSync(fixture.runtimeDir)).toBe(false);
     },
     15_000,
   );

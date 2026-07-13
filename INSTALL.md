@@ -170,7 +170,7 @@ Linux:  sh <源码目录>/plugins/codelink/scripts/uninstall-systemd-user.sh
 Windows: powershell -NoProfile -ExecutionPolicy Bypass -File <源码目录>\plugins\codelink\scripts\uninstall-scheduled-task.ps1
 ```
 
-重复运行卸载是安全的。脚本只忽略可精确确认的“尚未安装/已经移除”结果；权限、服务管理器或 Codex 的真实错误会停止卸载，并保留尚未清理的服务配置和 runtime 供诊断。修复错误后重新运行即可继续完成。
+重复运行卸载是安全的。脚本只把带有稳定“尚未安装/已经移除”标志的结果当作幂等成功；权限、服务管理器或 Codex 的真实错误会停止卸载，并保留尚未清理的服务配置和 runtime 供诊断，修复后重新运行即可继续完成。若本机已卸载 Codex，卸载仍会停止后台服务并清理 runtime，只跳过插件与 marketplace 移除。
 
 删除状态目录（`CODELINK_STATE_DIR`，未设置时为当前用户主目录下的 `.codelink`）会删除凭证和绑定；默认源码也位于当前用户主目录下的 `.codelink/source`，若它落在同一目录中也会被删除。执行前必须获得用户明确确认。
 

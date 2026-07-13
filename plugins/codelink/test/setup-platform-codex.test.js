@@ -44,6 +44,7 @@ describe("Codex 可执行文件解析", () => {
         arch: "x64",
         env: { PATH: "C:\\Tools", PATHEXT: ".EXE;.CMD" },
         exists: (candidate) => existing.has(candidate),
+        isExecutable: (candidate) => existing.has(candidate),
         realpath: (value) => value,
       }),
     ).toBe(native);

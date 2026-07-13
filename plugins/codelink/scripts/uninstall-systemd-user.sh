@@ -36,7 +36,11 @@ case "${1:-}" in
     exit 0
     ;;
   "")
-    NODE_BIN="${CODELINK_NODE_BIN:-$(command -v node)}"
+    NODE_BIN="${CODELINK_NODE_BIN:-$(command -v node || true)}"
+    if [ -z "$NODE_BIN" ]; then
+      echo "未找到 node；请设置 CODELINK_NODE_BIN 后重新运行卸载。" >&2
+      exit 1
+    fi
     exec "$NODE_BIN" "$SCRIPT_DIR/uninstall.mjs" --platform linux
     ;;
   *)
