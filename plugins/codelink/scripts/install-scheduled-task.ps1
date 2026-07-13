@@ -46,8 +46,24 @@ $Runner = @(
     '$RuntimeCli = ' + (ConvertTo-SingleQuotedLiteral $RuntimeCli)
     '$StdoutPath = ' + (ConvertTo-SingleQuotedLiteral $StdoutPath)
     '$StderrPath = ' + (ConvertTo-SingleQuotedLiteral $StderrPath)
-    '& $NodeBin $RuntimeCli daemon 1>> $StdoutPath 2>> $StderrPath'
-    'exit $LASTEXITCODE'
+    'if (-not (Test-Path -LiteralPath $NodeBin -PathType Leaf)) {'
+    '    throw "CodeLink Node executable not found: $NodeBin"'
+    '}'
+    'if (-not (Test-Path -LiteralPath $RuntimeCli -PathType Leaf)) {'
+    '    throw "CodeLink runtime CLI not found: $RuntimeCli"'
+    '}'
+    '$NativeExitCode = 1'
+    '$PreviousErrorActionPreference = $ErrorActionPreference'
+    'try {'
+    '    $ErrorActionPreference = "Continue"'
+    '    & $NodeBin $RuntimeCli daemon 1>> $StdoutPath 2>> $StderrPath'
+    '    if ($null -ne $LASTEXITCODE) {'
+    '        $NativeExitCode = $LASTEXITCODE'
+    '    }'
+    '} finally {'
+    '    $ErrorActionPreference = $PreviousErrorActionPreference'
+    '}'
+    'exit $NativeExitCode'
 ) -join [Environment]::NewLine
 [IO.File]::WriteAllText($RunnerPath, $Runner, [Text.UTF8Encoding]::new($false))
 
