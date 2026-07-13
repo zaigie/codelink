@@ -112,6 +112,30 @@ function commandSucceeds(command, args) {
   return spawnSync(command, args, { stdio: "ignore" }).status === 0;
 }
 
+function verifyInstalledMcp(nodeBin, runtimeCli) {
+  const result = spawnSync(nodeBin, [runtimeCli, "doctor"], {
+    encoding: "utf8",
+  });
+  if (result.error || result.status !== 0) {
+    throw new Error(
+      "E_MCP_DIAGNOSTIC_FAILED：无法运行已安装 runtime 的安全自检；请检查 Node 路径和安装日志后重试。",
+    );
+  }
+  let report;
+  try {
+    report = JSON.parse(result.stdout);
+  } catch {
+    throw new Error(
+      "E_MCP_DIAGNOSTIC_FAILED：runtime doctor 未返回有效结果；请重新安装后重试。",
+    );
+  }
+  if (report?.mcpEndpointReady !== true) {
+    throw new Error(
+      "E_MCP_UNHEALTHY：CodeLink MCP endpoint 未就绪；请检查 daemon 日志后重试。",
+    );
+  }
+}
+
 function helpText() {
   return (
     `CodeLink 跨平台安装器\n\n` +
@@ -426,8 +450,14 @@ export async function main(args = process.argv.slice(2)) {
   }
 
   process.stdout.write("[5/5] 验证后台服务\n");
-  if (options.service) await waitForHealth();
-  else process.stdout.write("未注册服务，跳过健康检查。\n");
+  if (options.service) {
+    await waitForHealth();
+    verifyInstalledMcp(
+      process.execPath,
+      path.join(stateDir, "runtime", "cli.cjs"),
+    );
+    process.stdout.write("daemon 与 MCP endpoint 均已就绪。\n");
+  } else process.stdout.write("未注册服务，跳过健康检查。\n");
 
   process.stdout.write(
     `${options.service ? "CodeLink 后台、微信与插件安装已完成。" : "CodeLink 运行时与插件安装已完成；未注册后台服务。"}\n` +

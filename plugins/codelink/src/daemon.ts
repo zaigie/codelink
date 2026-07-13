@@ -8,6 +8,8 @@ import {
   TaskRunner,
 } from "./codex-task-runner.js";
 import { isCodexThreadId } from "./codex-thread-id.js";
+import { DaemonClient } from "./daemon-client.js";
+import { createMcpHttpHandler } from "./mcp-http.js";
 import {
   ConversationBinding,
   StateStore,
@@ -50,6 +52,7 @@ type PendingThread = {
 
 export class CodelinkDaemon {
   private readonly server: http.Server;
+  private readonly mcpHttpHandler: ReturnType<typeof createMcpHttpHandler>;
   private readonly delivery: WeixinTextDelivery;
   private readonly typing: WeixinTypingIndicator;
   private readonly backgroundTasks = new Set<Promise<void>>();
@@ -70,6 +73,12 @@ export class CodelinkDaemon {
   ) {
     this.delivery = new WeixinTextDelivery(client);
     this.typing = new WeixinTypingIndicator(client);
+    this.mcpHttpHandler = createMcpHttpHandler({
+      client: new DaemonClient({
+        baseUrl: `http://${config.daemon.host}:${config.daemon.port}`,
+      }),
+      allowedHosts: [`${config.daemon.host}:${config.daemon.port}`],
+    });
     this.server = http.createServer((request, response) => {
       void this.handleHttp(request, response);
     });
@@ -811,6 +820,10 @@ export class CodelinkDaemon {
     response: ServerResponse,
   ): Promise<void> {
     try {
+      if (request.url === "/mcp") {
+        await this.mcpHttpHandler(request, response);
+        return;
+      }
       if (request.method === "GET" && request.url === "/health") {
         const status = this.getStatus();
         return this.json(response, status.ok ? 200 : 503, status);

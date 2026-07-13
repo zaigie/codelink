@@ -95,7 +95,7 @@ node <源码目录>/plugins/codelink/scripts/setup.mjs
 2. 添加当前持久源码为本地 marketplace，并安装 `codelink` 插件；
 3. 若没有现有 CodeLink session，启动腾讯 iLink 登录；
 4. 复制最小运行时到状态目录的 `runtime` 子目录；状态目录优先使用 `CODELINK_STATE_DIR`，否则使用当前用户主目录下的 `.codelink`；随后注册当前系统的用户态后台服务；
-5. 通过不含用户标识的 `127.0.0.1:18791/healthz` 验证 daemon。
+5. 通过不含用户标识的 `127.0.0.1:18791/healthz` 验证 daemon，再通过 `127.0.0.1:18791/mcp` 完成 MCP 初始化和工具清单验证；只有两者都就绪才报告安装成功。
 
 登录期间，安装器使用 PNG-only 模式在状态目录生成 `login-qr.png`；状态目录优先使用 `CODELINK_STATE_DIR`，否则由系统路径 API 解析为当前用户主目录下的 `.codelink`。Codex 必须立即读取该 PNG，并把二维码图片直接发在当前主会话中，然后暂停等待扫码。不能只打印文件路径、备用链接或终端二维码，也不能让用户展开执行过程才能看到图片；不得把二维码内容解析成文本输出。二维码内容不会写入安装终端日志，登录成功或超时后会清理 PNG。已有 `weixin-session.json` 时安装器会保留登录态并跳过扫码。
 
@@ -130,7 +130,7 @@ macOS/Linux（POSIX shell）：
 
 ```bash
 STATE_DIR="${CODELINK_STATE_DIR:-$HOME/.codelink}"
-node "$STATE_DIR/runtime/cli.cjs" doctor
+"<安装器预检输出的 Node 绝对路径>" "$STATE_DIR/runtime/cli.cjs" doctor
 ```
 
 Windows PowerShell：
@@ -141,10 +141,10 @@ $StateDir = if ($env:CODELINK_STATE_DIR) {
 } else {
     Join-Path $HOME ".codelink"
 }
-node (Join-Path $StateDir "runtime\cli.cjs") doctor
+& "<安装器预检输出的 Node 绝对路径>" (Join-Path $StateDir "runtime\cli.cjs") doctor
 ```
 
-`daemonHealthy=true` 只说明后台与微信轮询正常；`pluginInstalled` 和 `mcpBundleReady` 说明插件及 MCP bundle 已安装。Codex 任务中的工具加载仍以“新建任务”为边界；新任务仍看不到 CodeLink 时，重启 Codex App 后再检查。
+`daemonHealthy=true` 只说明后台与微信轮询正常；`pluginInstalled` 和 `mcpBundleReady` 说明插件配置及 MCP bundle 已安装；`mcpEndpointReady=true` 表示 doctor 已通过真实 MCP 初始化和工具清单验证。Codex 任务中的工具加载仍以“新建任务”为边界；更新后创建的新任务仍看不到 CodeLink 时，只重启 Codex App 一次。重启后新任务仍缺少工具，应重新运行安装器并检查 `E_MCP_UNHEALTHY`，不要循环新建任务。
 
 检查服务状态时不要输出健康接口中的用户 ID，也不要读取或展示 session 文件内容。
 

@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import { CodexTaskRunner } from "./codex-task-runner.js";
 import { CodelinkDaemon } from "./daemon.js";
 import { DaemonClient } from "./daemon-client.js";
-import { createDoctorReport } from "./doctor.js";
+import { createDoctorReport, probeMcpEndpoint } from "./doctor.js";
 import { exportOpenClawState, importOpenClawState } from "./openclaw-state.js";
 import { StateStore } from "./state.js";
 import { WeixinClient } from "./weixin/client.js";
@@ -52,7 +52,10 @@ async function main(): Promise<void> {
       } catch {
         // Offline is a doctor result, not a CLI crash.
       }
-      printJson(createDoctorReport({ store, daemonStatus }));
+      const mcpEndpointReady = await probeMcpEndpoint();
+      printJson(
+        createDoctorReport({ store, daemonStatus, mcpEndpointReady }),
+      );
       return;
     }
     case "tasks": {
