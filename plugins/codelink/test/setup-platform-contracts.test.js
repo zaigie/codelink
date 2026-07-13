@@ -6,6 +6,22 @@ import { describe, expect, it } from "vitest";
 
 const testDir = path.dirname(fileURLToPath(import.meta.url));
 
+let cachedPowerShell;
+function findPowerShell() {
+  if (cachedPowerShell === undefined) {
+    cachedPowerShell =
+      ["pwsh", "powershell.exe"].find((candidate) => {
+        const probe = spawnSync(
+          candidate,
+          ["-NoProfile", "-Command", "$PSVersionTable.PSVersion"],
+          { stdio: "ignore" },
+        );
+        return probe.status === 0;
+      }) ?? null;
+  }
+  return cachedPowerShell;
+}
+
 function hasSh() {
   return (
     spawnSync("sh", ["-c", "exit 0"], {
@@ -106,7 +122,8 @@ describe("小白安装契约", () => {
 });
 
 describe("安装脚本语法", () => {
-  it.each([
+  // 缺 sh / PowerShell 时显式 skip，让缺口在报告中可见，而不是静默报绿。
+  it.skipIf(!hasSh()).each([
     "setup.sh",
     "install-launch-agent.sh",
     "uninstall-launch-agent.sh",
@@ -114,7 +131,6 @@ describe("安装脚本语法", () => {
     "uninstall-systemd-user.sh",
     "start-mcp.sh",
   ])("%s 在 sh 可用时通过 sh -n", (script) => {
-    if (!hasSh()) return;
     const scriptPath = path.resolve("scripts", script);
     const result = spawnSync("sh", ["-n", scriptPath], {
       cwd: path.resolve(testDir, ".."),
@@ -124,16 +140,8 @@ describe("安装脚本语法", () => {
     expect(result.status).toBe(0);
   });
 
-  it("在可用时用 PowerShell parser 校验 ps1，不注册任务", () => {
-    const shell = ["pwsh", "powershell.exe"].find((candidate) => {
-      const probe = spawnSync(
-        candidate,
-        ["-NoProfile", "-Command", "$PSVersionTable.PSVersion"],
-        { stdio: "ignore" },
-      );
-      return probe.status === 0;
-    });
-    if (!shell) return;
+  it.skipIf(!findPowerShell())("在可用时用 PowerShell parser 校验 ps1，不注册任务", () => {
+    const shell = findPowerShell();
 
     for (const script of [
       "install-scheduled-task.ps1",
