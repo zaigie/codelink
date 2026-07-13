@@ -434,63 +434,131 @@ rl.on("line", (line) => {
     });
   });
 
-  it.each([
-    [
-      "item/commandExecution/requestApproval",
-      "CodeLink 当前不支持微信审批",
-    ],
-    ["item/tool/requestUserInput", "CodeLink 当前不支持 Codex 交互请求"],
-  ])(
-    "fails clearly for unsupported App Server request %s",
-    async (requestMethod, expectedMessage) => {
+  it("answers server requests without leaving the turn waiting", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "codelink-app-server-"));
     cleanup.push(dir);
     const fakeCodex = writeFakeCodex(
       dir,
       `#!/usr/bin/env node
+const assert = require("node:assert/strict");
 const readline = require("node:readline");
 const rl = readline.createInterface({ input: process.stdin });
 const send = (value) => process.stdout.write(JSON.stringify(value) + "\\n");
+const queued = [
+  {
+    request: { method: "item/fileChange/requestApproval", id: 0, params: {} },
+    response: { id: 0, result: { decision: "decline" } }
+  },
+  {
+    request: { method: "item/tool/requestUserInput", id: "input-1", params: {} },
+    response: { id: "input-1", result: { answers: {} } }
+  },
+  {
+    request: { method: "mcpServer/elicitation/request", id: 40, params: {} },
+    response: { id: 40, result: { action: "decline", content: null, _meta: null } }
+  },
+  {
+    request: { method: "item/permissions/requestApproval", id: "permissions-1", params: {} },
+    response: { id: "permissions-1", result: { permissions: {}, scope: "turn" } }
+  },
+  {
+    request: { method: "execCommandApproval", id: 41, params: {} },
+    response: { id: 41, result: { decision: "denied" } }
+  },
+  {
+    request: { method: "applyPatchApproval", id: "legacy-patch", params: {} },
+    response: { id: "legacy-patch", result: { decision: "denied" } }
+  },
+  {
+    request: { method: "future/serverRequest", id: "unknown-1", params: {} },
+    response: {
+      id: "unknown-1",
+      error: { code: -32601, message: "Method not supported: future/serverRequest" }
+    }
+  }
+];
+let active;
+let turnRequest;
+const watchdog = setTimeout(() => {
+  process.stderr.write("server request watchdog expired\\n");
+  process.exit(2);
+}, 1500);
+
+const sendNext = () => {
+  active = queued.shift();
+  if (active) {
+    send(active.request);
+    return;
+  }
+  clearTimeout(watchdog);
+  send({ method: "item/completed", params: {
+    threadId: turnRequest.params.threadId,
+    turnId: "turn-server-requests",
+    item: { type: "agentMessage", phase: "final_answer", text: "handled safely" }
+  } });
+  send({ method: "turn/completed", params: {
+    threadId: turnRequest.params.threadId,
+    turn: { id: "turn-server-requests", status: "completed", error: null }
+  } });
+};
+
 rl.on("line", (line) => {
-  const request = JSON.parse(line);
-  if (request.method === "initialize") {
-    send({ id: request.id, result: { codexHome: "/tmp" } });
-  } else if (request.method === "thread/start") {
-    send({ id: request.id, result: { thread: { id: "approval-thread" } } });
-  } else if (request.method === "turn/start") {
-    send({ id: request.id, result: { turn: { id: "approval-turn", status: "inProgress" } } });
-    send({
-      id: "approval-request-1",
-      method: ${JSON.stringify(requestMethod)},
-      params: {
-        threadId: "approval-thread",
-        turnId: "approval-turn",
-        itemId: "command-1",
-        reason: "needs permission"
+  try {
+    const message = JSON.parse(line);
+    if (message.method === "initialize") {
+      send({ id: message.id, result: { codexHome: "/tmp" } });
+    } else if (message.method === "thread/start") {
+      send({ id: message.id, result: { thread: { id: "server-request-thread" } } });
+    } else if (message.method === "turn/start") {
+      turnRequest = message;
+      active = {
+        request: {
+          method: "item/commandExecution/requestApproval",
+          id: message.id,
+          params: {}
+        },
+        response: { id: message.id, result: { decision: "decline" } },
+        releasesTurn: true
+      };
+      send(active.request);
+    } else if (active && message.method === undefined) {
+      assert.deepStrictEqual(message, active.response);
+      if (active.releasesTurn) {
+        send({
+          id: turnRequest.id,
+          result: { turn: { id: "turn-server-requests", status: "inProgress" } }
+        });
       }
-    });
+      sendNext();
+    }
+  } catch (error) {
+    process.stderr.write(String(error) + "\\n");
+    process.exit(3);
   }
 });
 `,
     );
 
     const client = new StdioCodexAppServer(fakeCodex, {
-      turnTimeoutMs: 500,
+      requestTimeoutMs: 2_000,
+      turnTimeoutMs: 2_000,
     });
+    const result = await client.runNewThread(
+      {
+        cwd: dir,
+        sandboxMode: "workspace-write",
+        approvalPolicy: "never",
+        networkAccessEnabled: false,
+      },
+      "handle server requests",
+    );
 
-    await expect(
-      client.runNewThread(
-        {
-          cwd: dir,
-          sandboxMode: "workspace-write",
-          approvalPolicy: "never",
-          networkAccessEnabled: false,
-        },
-        "request approval",
-      ),
-    ).rejects.toThrow(`${expectedMessage}（${requestMethod}）`);
-    },
-  );
+    expect(result).toEqual({
+      threadId: "server-request-thread",
+      turnId: "turn-server-requests",
+      finalResponse: "handled safely",
+    });
+  });
 
   it("launches a codex.cmd shim through a shell even when its path contains spaces", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "codelink-app-server-"));
