@@ -260,6 +260,9 @@ class AppServerSession {
       this.stderr = `${this.stderr}${chunk.toString("utf8")}`.slice(-20_000);
     });
     child.once("error", (error) => this.fail(error));
+    // stdin 管道的异步错误（如对端先关闭后写入的 EPIPE）没有默认监听会成为
+    // uncaughtException；统一收敛为当前 turn 的失败。
+    child.stdin.on("error", (error) => this.fail(error));
     child.once("exit", (code, signal) => {
       if (this.closed) return;
       this.fail(
@@ -358,7 +361,11 @@ class AppServerSession {
 
       this.child.once("close", finish);
       this.child.once("error", finish);
-      this.child.stdin.end();
+      try {
+        this.child.stdin.end();
+      } catch {
+        // stdin 已销毁时的收尾失败不应替换 turn 的原始错误。
+      }
       forceClose = setTimeout(() => {
         if (this.child.exitCode === null) this.child.kill("SIGTERM");
       }, 1_000);
@@ -426,35 +433,50 @@ class AppServerSession {
   }
 
   private respondToServerRequest(id: number | string, method: string): void {
-    switch (method) {
-      case "item/commandExecution/requestApproval":
-      case "item/fileChange/requestApproval":
-        this.write({ id, result: { decision: "decline" } });
-        return;
-      case "item/tool/requestUserInput":
-        this.write({ id, result: { answers: {} } });
-        return;
-      case "mcpServer/elicitation/request":
-        this.write({
-          id,
-          result: { action: "decline", content: null, _meta: null },
-        });
-        return;
-      case "item/permissions/requestApproval":
-        this.write({ id, result: { permissions: {}, scope: "turn" } });
-        return;
-      case "execCommandApproval":
-      case "applyPatchApproval":
-        this.write({ id, result: { decision: "denied" } });
-        return;
-      default:
-        this.write({
-          id,
-          error: {
-            code: -32601,
-            message: `Method not supported: ${method}`,
-          },
-        });
+    // 该方法从 readline 回调进入；write 抛错（如 stdin 已关闭的退出竞态）
+    // 必须收敛为当前 turn 的明确失败，不能成为压垮 daemon 的未捕获异常。
+    try {
+      switch (method) {
+        case "item/commandExecution/requestApproval":
+        case "item/fileChange/requestApproval":
+          this.write({ id, result: { decision: "decline" } });
+          return;
+        case "item/tool/requestUserInput":
+          this.write({ id, result: { answers: {} } });
+          return;
+        case "mcpServer/elicitation/request":
+          this.write({
+            id,
+            result: { action: "decline", content: null, _meta: null },
+          });
+          return;
+        case "item/permissions/requestApproval":
+          this.write({ id, result: { permissions: {}, scope: "turn" } });
+          return;
+        case "execCommandApproval":
+        case "applyPatchApproval":
+          this.write({ id, result: { decision: "denied" } });
+          return;
+        default:
+          this.write({
+            id,
+            error: {
+              code: -32601,
+              message: `Method not supported: ${method}`,
+            },
+          });
+          // 未知请求可能是非阻塞的，答复错误后让 turn 继续；记录 method 名，
+          // 使阻塞型未知请求拖到 turn 超时时可以从日志定位原因。
+          process.stderr.write(
+            `Codex App Server 发来未支持的交互请求：${method}\n`,
+          );
+      }
+    } catch (error) {
+      this.fail(
+        error instanceof Error
+          ? error
+          : new Error(`响应 Codex App Server 请求失败：${String(error)}`),
+      );
     }
   }
 
