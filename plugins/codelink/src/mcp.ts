@@ -1,5 +1,6 @@
+import fs from "node:fs";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -108,10 +109,22 @@ async function main(): Promise<void> {
   await server.connect(transport);
 }
 
-const isMain =
-  process.argv[1] &&
-  pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url;
-if (isMain) {
+// import.meta.url 在 ESM 下是 realpath（默认无 --preserve-symlinks），而
+// argv[1] 保留调用路径；经 symlink 启动时必须双侧 realpath 才能判定为主模块。
+function isMainModule(moduleUrl: string, entrypoint: string | undefined): boolean {
+  if (!entrypoint) return false;
+  try {
+    return (
+      fs.realpathSync(fileURLToPath(moduleUrl)) ===
+      fs.realpathSync(path.resolve(entrypoint))
+    );
+  } catch {
+    // realpath 失败（非 file: URL、文件暂不可达）时退回 URL 比较，而不是静默否定。
+    return pathToFileURL(path.resolve(entrypoint)).href === moduleUrl;
+  }
+}
+
+if (isMainModule(import.meta.url, process.argv[1])) {
   main().catch((error) => {
     process.stderr.write(
       `CodeLink MCP failed: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}\n`,

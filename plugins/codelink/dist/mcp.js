@@ -6871,12 +6871,12 @@ var require_dist = __commonJS({
         throw new Error(`Unknown format "${name}"`);
       return f;
     };
-    function addFormats(ajv, list, fs, exportName) {
+    function addFormats(ajv, list, fs2, exportName) {
       var _a2;
       var _b;
       (_a2 = (_b = ajv.opts.code).formats) !== null && _a2 !== void 0 ? _a2 : _b.formats = (0, codegen_1._)`require("ajv-formats/dist/formats").${exportName}`;
       for (const f of list)
-        ajv.addFormat(f, fs[f]);
+        ajv.addFormat(f, fs2[f]);
     }
     module.exports = exports = formatsPlugin;
     Object.defineProperty(exports, "__esModule", { value: true });
@@ -6885,8 +6885,9 @@ var require_dist = __commonJS({
 });
 
 // src/mcp.ts
+import fs from "node:fs";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 // node_modules/zod/v3/helpers/util.js
 var util;
@@ -30346,8 +30347,15 @@ async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }
-var isMain = process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url;
-if (isMain) {
+function isMainModule(moduleUrl, entrypoint) {
+  if (!entrypoint) return false;
+  try {
+    return fs.realpathSync(fileURLToPath(moduleUrl)) === fs.realpathSync(path.resolve(entrypoint));
+  } catch {
+    return pathToFileURL(path.resolve(entrypoint)).href === moduleUrl;
+  }
+}
+if (isMainModule(import.meta.url, process.argv[1])) {
   main().catch((error48) => {
     process.stderr.write(
       `CodeLink MCP failed: ${error48 instanceof Error ? error48.stack ?? error48.message : String(error48)}
