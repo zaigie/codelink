@@ -158,7 +158,8 @@ describe("共享卸载生命周期", () => {
     expect(calls).toEqual(expectedCalls);
   });
 
-  it(
+  // fixture 通过 spawn sh 脚本与含 <> 的路径驱动，二者在 Windows 上均不可用。
+  it.skipIf(process.platform === "win32")(
     "macOS 重复卸载保留 state，并对真实 stop 失败保持现场",
     () => {
       const fixture = createMacFixture();
