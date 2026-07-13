@@ -91,6 +91,7 @@ macOS 提醒：CodeLink 当前通过 Node.js 运行 LaunchAgent，因此系统�
 - 微信续接不是 HITL 审批，不能在微信批准工具调用或权限请求；
 - 微信新建的会话会保存到 Codex，但不保证实时出现在 Codex App 左侧列表；
 - 升级不会改写或删除历史 thread；升级前已经生成的时间戳项目仍按 Codex 的历史记录保留；
+- 本地 daemon API 只监听 loopback IP，并由 CLI 和插件自动使用安装级 bearer 凭证；
 - CodeLink 使用公开的 [Codex App Server](https://developers.openai.com/codex/app-server/)，不会修改 App 数据库、伪装官方客户端或连接私有 IPC。
 
 完整安装、更新、卸载和故障排查见 [INSTALL.md](INSTALL.md)，更精确的产品边界见 [docs/CAPABILITY_BOUNDARY.md](docs/CAPABILITY_BOUNDARY.md)。
