@@ -46,6 +46,7 @@ typing 线协议依据腾讯公开、MIT 授权且随包发布源码的 [`@tence
 - 较早的微信任务稍后完成时，不会覆盖期间产生的更新绑定；
 - daemon 统一追加任务通知标签和回复说明；
 - 如果当前 Codex 环境没有提供可信 thread 元数据，通知仍可发送，但不会改变当前绑定，并会明确提示降级结果。
+- 插件通过 `127.0.0.1:18791/mcp` 的 Streamable HTTP MCP 连接常驻 daemon，不要求 Codex 任务 PATH 中存在 `node`；该 endpoint 只监听 loopback。
 
 `_meta.threadId` 已由当前官方 Codex 客户端真实验证，但尚未写入公开 App Server 文档。CodeLink 因此保留缺失检测和不绑定降级，不把它当作不可变化的永久协议字段。
 
@@ -83,5 +84,6 @@ CodeLink 新建的微信会话会保存到本机 Codex 存储并返回 thread ID
 9. 长任务显示临时“正在输入”，普通最终回复不暴露内部 ID 或运行标签；
 10. MCP 和日志不暴露 bot token、context token 或 typing ticket；
 11. 两个新建 thread 的 ID 不同且 cwd 都等于同一个 CodeLink 工作目录，不再生成时间戳项目。
+12. 没有系统 Node PATH 的新 Codex 任务仍能通过 daemon MCP endpoint 加载三项 CodeLink 工具。
 
 微信新建会话是否出现在 Codex App 侧栏不作为验收项。

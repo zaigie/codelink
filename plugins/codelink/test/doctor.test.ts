@@ -41,6 +41,7 @@ describe("CodeLink doctor", () => {
 
     const report = createDoctorReport({
       store,
+      mcpEndpointReady: true,
       daemonStatus: {
         ok: true,
         accountId: "secret-account",
@@ -56,6 +57,7 @@ describe("CodeLink doctor", () => {
       runtimeReady: true,
       pluginInstalled: true,
       mcpBundleReady: true,
+      mcpEndpointReady: true,
       daemonHealthy: true,
       wechatLoggedIn: true,
       defaultRecipientReady: true,
@@ -93,14 +95,26 @@ describe("CodeLink doctor", () => {
     const status = { ok: true, hasDefaultContextToken: true };
 
     fs.writeFileSync(path.join(dir, "runtime", "cli.cjs"), "tampered");
-    expect(createDoctorReport({ store, daemonStatus: status })).toMatchObject({
+    expect(
+      createDoctorReport({
+        store,
+        daemonStatus: status,
+        mcpEndpointReady: true,
+      }),
+    ).toMatchObject({
       ok: false,
       runtimeReady: false,
     });
 
     createRuntime(dir);
     fs.writeFileSync(path.join(pluginRoot, "dist", "mcp.js"), "tampered");
-    expect(createDoctorReport({ store, daemonStatus: status })).toMatchObject({
+    expect(
+      createDoctorReport({
+        store,
+        daemonStatus: status,
+        mcpEndpointReady: true,
+      }),
+    ).toMatchObject({
       ok: false,
       pluginInstalled: true,
       mcpBundleReady: false,
@@ -108,7 +122,13 @@ describe("CodeLink doctor", () => {
 
     fs.writeFileSync(path.join(pluginRoot, "dist", "mcp.js"), "bundle");
     fs.rmSync(pluginRoot, { recursive: true, force: true });
-    expect(createDoctorReport({ store, daemonStatus: status })).toMatchObject({
+    expect(
+      createDoctorReport({
+        store,
+        daemonStatus: status,
+        mcpEndpointReady: true,
+      }),
+    ).toMatchObject({
       ok: false,
       pluginInstalled: false,
       mcpBundleReady: false,
@@ -120,10 +140,17 @@ describe("CodeLink doctor", () => {
     cleanup.push(dir);
     const store = new StateStore(dir);
 
-    expect(createDoctorReport({ store, daemonStatus: null })).toMatchObject({
+    expect(
+      createDoctorReport({
+        store,
+        daemonStatus: null,
+        mcpEndpointReady: false,
+      }),
+    ).toMatchObject({
       ok: false,
       runtimeReady: false,
       pluginInstalled: false,
+      mcpEndpointReady: false,
       daemonHealthy: false,
       wechatLoggedIn: false,
     });
@@ -161,7 +188,7 @@ function createInstalledPlugin(stateDir: string): string {
     path.join(pluginRoot, ".mcp.json"),
     JSON.stringify({
       mcpServers: {
-        codelink: { command: "node", args: ["./dist/mcp.js"], cwd: "." },
+        codelink: { url: "http://127.0.0.1:18791/mcp" },
       },
     }),
   );

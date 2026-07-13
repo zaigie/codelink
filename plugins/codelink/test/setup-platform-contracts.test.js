@@ -78,7 +78,6 @@ describe("小白安装契约", () => {
       ),
       "utf8",
     );
-    expect(skill).toContain("CODELINK_STATE_DIR");
     expect(skill).toContain("POSIX");
     expect(skill).toContain("PowerShell");
 
@@ -88,6 +87,25 @@ describe("小白安装契约", () => {
     );
     expect(migration).not.toContain("~/.openclaw");
     expect(migration).toContain("Windows PowerShell");
+  });
+
+  it("工具缺失回退不依赖裸 Node，也不循环要求新建任务", () => {
+    const repoRoot = path.resolve(testDir, "..", "..", "..");
+    const skill = fs.readFileSync(
+      path.join(
+        repoRoot,
+        "plugins",
+        "codelink",
+        "skills",
+        "wechat-codelink",
+        "SKILL.md",
+      ),
+      "utf8",
+    );
+
+    expect(skill).not.toContain('node "$STATE_DIR/runtime/cli.cjs" doctor');
+    expect(skill).toContain("不要重复建议新建任务");
+    expect(skill).toContain("http://127.0.0.1:18791/healthz");
   });
 
   it("CI 明确检查 macOS/Linux 的 x64 与 arm64 依赖解析", () => {

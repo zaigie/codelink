@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -11,6 +12,17 @@ const pluginRoot = path.resolve(
 );
 
 describe("bundled MCP server", () => {
+  it("通过 daemon HTTP 加载插件工具而不依赖任务 PATH 中的 Node", () => {
+    const config = JSON.parse(
+      fs.readFileSync(path.join(pluginRoot, ".mcp.json"), "utf8"),
+    );
+
+    expect(config.mcpServers.codelink).toEqual({
+      url: "http://127.0.0.1:18791/mcp",
+    });
+    expect(config.mcpServers.codelink).not.toHaveProperty("command");
+  });
+
   it("starts over stdio and advertises the CodeLink tools", async () => {
     const transport = new StdioClientTransport({
       command: process.execPath,

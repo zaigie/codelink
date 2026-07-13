@@ -2,12 +2,12 @@
 
 ## Daemon 与 MCP 分工
 
-Codex 只在任务上下文中启动插件 MCP server，因此没有 Codex 任务运行时，MCP 不能持续接收微信消息。CodeLink 分成两部分：
+Codex 只在任务上下文中加载插件工具，因此没有 Codex 任务运行时，插件工具不能持续接收微信消息。CodeLink 分成两部分：
 
-- 常驻 Node daemon：腾讯 iLink 长轮询、白名单、会话路由、Codex App Server 调用和微信发送；
-- 任务内 stdio MCP server：检查状态、查看近期记录、从 Codex 桌面任务发送通知。
+- 常驻 Node daemon：腾讯 iLink 长轮询、白名单、会话路由、Codex App Server 调用、微信发送，以及只监听 loopback 的 Streamable HTTP MCP；
+- 任务内插件 MCP 连接：通过固定的 `http://127.0.0.1:18791/mcp` 检查状态、查看近期记录、从 Codex 桌面任务发送通知，不再启动依赖任务 PATH 的 Node 子进程。
 
-MCP 只访问 `http://127.0.0.1:18791`，不会获得微信 bot token。
+MCP endpoint 与 daemon API 使用同一个 `127.0.0.1:18791` loopback 监听器，不会把微信 bot token 返回给 Codex。每个 HTTP MCP 请求使用独立的无状态 transport，并校验 Host，避免把 task 生命周期或 session 状态带入 daemon。
 
 ## 会话路由
 
@@ -90,7 +90,7 @@ daemon、MCP 和状态存储只使用 Node.js API 与纯 JavaScript 依赖，不
 - Windows 用当前用户 Scheduled Task；
 - 不具备上述服务管理器时，daemon 仍可由其他进程管理器前台启动。
 
-统一安装器根据 `process.platform/process.arch` 匹配官方 Codex 的 x64/arm64 target，并解析 npm wrapper 后面的原生 `codex`/`codex.exe`。用户安装消费仓库中预构建的 `cli.cjs`/`mcp.js`，先用提交的 SHA-256 清单校验，因此 Codex App 内置的独立 Node 即使没有 npm 也能安装；npm 只保留给显式 `--build` 开发流程。Node 与 Codex 的绝对路径会写进服务环境，避免后台会话与交互式 shell 的 PATH 不一致。安装成功后写入无用户标识的私有回执，`doctor` 将 runtime、插件/MCP、daemon、微信 session 和通知上下文分层报告。当前未承诺的架构是官方 Codex 没有对应原生 target 的组合，而不是 CodeLink 主动限制操作系统。
+统一安装器根据 `process.platform/process.arch` 匹配官方 Codex 的 x64/arm64 target，并解析 npm wrapper 后面的原生 `codex`/`codex.exe`。用户安装消费仓库中预构建的 `cli.cjs`/`mcp.js`，先用提交的 SHA-256 清单校验，因此 Codex App 内置的独立 Node 即使没有 npm 也能安装；npm 只保留给显式 `--build` 开发流程。Node 与 Codex 的绝对路径会写进服务环境，避免后台会话与交互式 shell 的 PATH 不一致；插件 MCP 本身通过 loopback URL 连接 daemon，不再要求任务 PATH 能解析 `node`。安装成功后写入无用户标识的私有回执，`doctor` 将 runtime、插件/MCP 静态完整性、MCP endpoint 实际初始化、daemon、微信 session 和通知上下文分层报告。当前未承诺的架构是官方 Codex 没有对应原生 target 的组合，而不是 CodeLink 主动限制操作系统。
 
 ## HITL
 

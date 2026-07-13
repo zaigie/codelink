@@ -13,7 +13,7 @@
 请按照官方安装契约自行安装或更新 CodeLink，并完成安全自检：https://github.com/zaigie/codelink/blob/main/INSTALL.md。二维码出现后请直接显示在当前主会话并等我扫码。
 ```
 
-Codex 直接展示二维码后，用已经启用微信 ClawBot 的微信扫码即可连接。剩下的克隆、预构建运行时校验、插件安装和后台服务注册都由 Codex 完成。普通安装只需要 Node.js，不需要 npm；详细提示词也收录在 [INSTALL_PROMPT.md](INSTALL_PROMPT.md)。
+Codex 直接展示二维码后，用已经启用微信 ClawBot 的微信扫码即可连接。剩下的克隆、预构建运行时校验、插件安装和后台服务注册都由 Codex 完成。普通安装只需要 Node.js，不需要 npm；安装完成后，插件工具通过 loopback HTTP 连接常驻 daemon，不依赖 Codex 任务 PATH 中另有 `node`。详细提示词也收录在 [INSTALL_PROMPT.md](INSTALL_PROMPT.md)。
 
 ## 能做什么
 

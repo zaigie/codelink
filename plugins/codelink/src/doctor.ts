@@ -2,13 +2,24 @@ import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
 
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+
 import { StateStore } from "./state.js";
+
+const CODELINK_MCP_URL = "http://127.0.0.1:18791/mcp";
+const CODELINK_MCP_TOOLS = [
+  "get_wechat_status",
+  "list_recent_wechat_tasks",
+  "send_wechat_message",
+];
 
 export type DoctorReport = {
   ok: boolean;
   runtimeReady: boolean;
   pluginInstalled: boolean;
   mcpBundleReady: boolean;
+  mcpEndpointReady: boolean;
   daemonHealthy: boolean;
   wechatLoggedIn: boolean;
   defaultRecipientReady: boolean;
@@ -19,6 +30,7 @@ export type DoctorReport = {
 export function createDoctorReport(params: {
   store: StateStore;
   daemonStatus: unknown;
+  mcpEndpointReady: boolean;
 }): DoctorReport {
   const status = asRecord(params.daemonStatus);
   const receipt = params.store.loadInstallReceipt();
@@ -26,6 +38,7 @@ export function createDoctorReport(params: {
   const plugin = validatePlugin(receipt);
   const pluginInstalled = plugin.installed;
   const mcpBundleReady = plugin.mcpReady;
+  const mcpEndpointReady = params.mcpEndpointReady;
   const daemonHealthy = status?.ok === true;
   const wechatLoggedIn = Boolean(params.store.loadSession()) &&
     status?.sessionExpired !== true;
@@ -38,17 +51,38 @@ export function createDoctorReport(params: {
       runtimeReady &&
       pluginInstalled &&
       mcpBundleReady &&
+      mcpEndpointReady &&
       daemonHealthy &&
       wechatLoggedIn,
     runtimeReady,
     pluginInstalled,
     mcpBundleReady,
+    mcpEndpointReady,
     daemonHealthy,
     wechatLoggedIn,
     defaultRecipientReady,
     currentConversationBound,
     newTaskRequired: true,
   };
+}
+
+export async function probeMcpEndpoint(
+  endpoint = CODELINK_MCP_URL,
+): Promise<boolean> {
+  const client = new Client({ name: "codelink-doctor", version: "0.1.0" });
+  const transport = new StreamableHTTPClientTransport(new URL(endpoint), {
+    requestInit: { signal: AbortSignal.timeout(3_000) },
+  });
+  try {
+    await client.connect(transport);
+    const tools = await client.listTools();
+    const names = new Set(tools.tools.map((tool) => tool.name));
+    return CODELINK_MCP_TOOLS.every((name) => names.has(name));
+  } catch {
+    return false;
+  } finally {
+    await client.close().catch(() => undefined);
+  }
 }
 
 function validateRuntime(runtimeDir: string): boolean {
@@ -107,14 +141,12 @@ function validatePlugin(receipt: ReturnType<StateStore["loadInstallReceipt"]>): 
     );
     const servers = asRecord(mcp?.mcpServers);
     const codelink = asRecord(servers?.codelink);
-    const args = Array.isArray(codelink?.args) ? codelink.args : [];
     const mcpPath = path.join(receipt.pluginRoot, "dist", "mcp.js");
     const mcpHash = createHash("sha256")
       .update(fs.readFileSync(mcpPath))
       .digest("hex");
     const mcpReady =
-      codelink?.command === "node" &&
-      args.includes("./dist/mcp.js") &&
+      codelink?.url === CODELINK_MCP_URL &&
       mcpHash === receipt.mcpSha256;
     return { installed: true, mcpReady };
   } catch {
