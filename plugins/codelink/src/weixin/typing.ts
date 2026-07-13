@@ -1,5 +1,5 @@
 import type { WeixinSession } from "../state.js";
-import type { WeixinClient } from "./client.js";
+import { WeixinApiError, type WeixinClient } from "./client.js";
 
 const TYPING_KEEPALIVE_MS = 5_000;
 const TYPING_FAILURE_RETRY_MS = 60_000;
@@ -207,9 +207,12 @@ export class WeixinTypingIndicator {
     } catch (error) {
       if (signal?.aborted) return false;
       if (logErrors) {
-        process.stderr.write(
-          `微信输入状态更新失败：${error instanceof Error ? error.message : String(error)}\n`,
-        );
+        // 只输出协议层拒绝码；HTTP status 回退（如 200+非法 JSON）会误导排障。
+        const errorCode =
+          error instanceof WeixinApiError ? error.protocolErrorCode : undefined;
+        const codeSuffix =
+          typeof errorCode === "number" ? `（错误码 ${errorCode}）` : "";
+        process.stderr.write(`微信输入状态更新失败${codeSuffix}\n`);
       }
       return false;
     }
