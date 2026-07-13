@@ -151,9 +151,11 @@ describe("StateStore", () => {
 
     const reloaded = new StateStore(dir);
     expect(reloaded.hasProcessedMessage("message-1")).toBe(true);
-    expect(
-      fs.statSync(store.path("processed-messages.json")).mode & 0o777,
-    ).toBe(0o600);
+    if (process.platform !== "win32") {
+      expect(
+        fs.statSync(store.path("processed-messages.json")).mode & 0o777,
+      ).toBe(0o600);
+    }
   });
 
   it("publishes one private daemon credential across concurrent first use", async () => {
