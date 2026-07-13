@@ -88,6 +88,7 @@ const DAEMON_AUTH_TOKEN_FILE = "daemon-api-token";
 
 export class StateStore {
   readonly dir: string;
+  private processedMessages?: { messageIds: string[]; index: Set<string> };
 
   constructor(dir = resolveStateDir()) {
     this.dir = dir;
@@ -192,15 +193,26 @@ export class StateStore {
   }
 
   hasProcessedMessage(messageId: string): boolean {
-    return this.loadProcessedMessageState().messageIds.includes(messageId);
+    return this.loadProcessedMessages().index.has(messageId);
   }
 
   markProcessedMessage(messageId: string): boolean {
-    const state = this.loadProcessedMessageState();
-    if (state.messageIds.includes(messageId)) return false;
-    state.messageIds.push(messageId);
-    state.messageIds = state.messageIds.slice(-MAX_PROCESSED_MESSAGE_IDS);
-    this.writeJson("processed-messages.json", state, 0o600);
+    const cache = this.loadProcessedMessages();
+    if (cache.index.has(messageId)) return false;
+    cache.messageIds.push(messageId);
+    cache.index.add(messageId);
+    if (cache.messageIds.length > MAX_PROCESSED_MESSAGE_IDS) {
+      const evicted = cache.messageIds.splice(
+        0,
+        cache.messageIds.length - MAX_PROCESSED_MESSAGE_IDS,
+      );
+      for (const evictedId of evicted) cache.index.delete(evictedId);
+    }
+    this.writeJson(
+      "processed-messages.json",
+      { messageIds: cache.messageIds },
+      0o600,
+    );
     return true;
   }
 
@@ -416,6 +428,18 @@ export class StateStore {
           )
         : [],
     };
+  }
+
+  // 单 daemon 进程独占状态目录，因此缓存不需要跨进程失效。
+  private loadProcessedMessages(): { messageIds: string[]; index: Set<string> } {
+    if (!this.processedMessages) {
+      const state = this.loadProcessedMessageState();
+      this.processedMessages = {
+        messageIds: state.messageIds,
+        index: new Set(state.messageIds),
+      };
+    }
+    return this.processedMessages;
   }
 
   private readJson(name: string): unknown | null {

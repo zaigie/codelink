@@ -211,6 +211,101 @@ describe("CodelinkDaemon", () => {
     },
   );
 
+  it("redelivers a command reply when the process dies mid-delivery", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "codelink-daemon-"));
+    cleanup.push(dir);
+    const firstStore = new StateStore(dir);
+    const session: WeixinSession = {
+      accountId: "bot",
+      token: "token",
+      userId: "owner",
+      baseUrl: "https://ilinkai.weixin.qq.com",
+      savedAt: "now",
+    };
+    firstStore.saveSession(session);
+    const config = defaultConfig();
+    config.security.allowedUserIds = ["owner"];
+    const message: WeixinMessage = {
+      message_id: 810,
+      from_user_id: "owner",
+      message_type: 1,
+      context_token: "context-810",
+      item_list: [{ type: 1, text_item: { text: "/status" } }],
+    };
+    const messageId = inboundMessageId("bot", "message_id", 810);
+
+    // 投递挂起期间进程死亡：ledger 不得提前写入。
+    let releaseFirstSend!: (value: undefined) => void;
+    const hangingSend = vi.fn(
+      () =>
+        new Promise<undefined>((resolve) => {
+          releaseFirstSend = resolve;
+        }),
+    );
+    const crashed = new CodelinkDaemon(
+      config,
+      firstStore,
+      { sendText: hangingSend } as unknown as WeixinClient,
+      { runTask: vi.fn() },
+    ).handleIncomingMessage(session, message);
+    await vi.waitFor(() => expect(hangingSend).toHaveBeenCalled());
+    expect(firstStore.hasProcessedMessage(messageId)).toBe(false);
+
+    // 重启后重放同一条消息：回复必须补发，然后才进入 ledger。
+    const sendText = vi.fn(async () => undefined);
+    const reloadedStore = new StateStore(dir);
+    const replayed = new CodelinkDaemon(
+      config,
+      reloadedStore,
+      { sendText } as unknown as WeixinClient,
+      { runTask: vi.fn() },
+    ).handleIncomingMessage(session, message);
+    // 释放被挂起的首次投递，解除按用户串行的全局队列。
+    releaseFirstSend(undefined);
+    await Promise.all([crashed, replayed]);
+
+    expect(sendText).toHaveBeenCalledTimes(1);
+    expect(reloadedStore.hasProcessedMessage(messageId)).toBe(true);
+  });
+
+  it("delivers a duplicated in-batch command reply only once", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "codelink-daemon-"));
+    cleanup.push(dir);
+    const store = new StateStore(dir);
+    const session: WeixinSession = {
+      accountId: "bot",
+      token: "token",
+      userId: "owner",
+      baseUrl: "https://ilinkai.weixin.qq.com",
+      savedAt: "now",
+    };
+    store.saveSession(session);
+    const config = defaultConfig();
+    config.security.allowedUserIds = ["owner"];
+    const sendText = vi.fn(
+      async () => new Promise<undefined>((resolve) => setTimeout(resolve, 5)),
+    );
+    const daemon = new CodelinkDaemon(
+      config,
+      store,
+      { sendText } as unknown as WeixinClient,
+      { runTask: vi.fn() },
+    );
+    const message: WeixinMessage = {
+      message_id: 811,
+      from_user_id: "owner",
+      message_type: 1,
+      context_token: "context-811",
+      item_list: [{ type: 1, text_item: { text: "/help" } }],
+    };
+
+    const first = daemon.handleIncomingMessage(session, message);
+    const second = daemon.handleIncomingMessage(session, message);
+    await Promise.all([first, second]);
+
+    expect(sendText).toHaveBeenCalledTimes(1);
+  });
+
   it("derives a stable replay identity when upstream ids are absent", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "codelink-daemon-"));
     cleanup.push(dir);
@@ -612,7 +707,7 @@ describe("CodelinkDaemon", () => {
     { name: "help", messageId: 802, text: "/help" },
     { name: "new conversation", messageId: 803, text: "/new" },
   ])(
-    "persists $name acceptance before cursor advance while its reply is pending",
+    "keeps $name replayable until its pending reply settles",
     async ({ messageId, text }) => {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), "codelink-daemon-"));
       cleanup.push(dir);
@@ -653,11 +748,12 @@ describe("CodelinkDaemon", () => {
       const originalSaveCursor = store.saveSyncCursor.bind(store);
       let daemon!: CodelinkDaemon;
       vi.spyOn(store, "saveSyncCursor").mockImplementation((cursor) => {
+        // 回复尚未送达前不得写 ledger：此处崩溃时重放会重新执行幂等命令并补发回复。
         expect(
           store.hasProcessedMessage(
             inboundMessageId("bot", "message_id", messageId),
           ),
-        ).toBe(true);
+        ).toBe(false);
         expect(deliveryFinished).toBe(false);
         expect(daemon.getStatus().activeTasks).toBe(1);
         originalSaveCursor(cursor);
@@ -678,6 +774,11 @@ describe("CodelinkDaemon", () => {
       finishDelivery();
       await daemon.waitForIdle();
       expect(deliveryFinished).toBe(true);
+      expect(
+        store.hasProcessedMessage(
+          inboundMessageId("bot", "message_id", messageId),
+        ),
+      ).toBe(true);
     },
   );
 

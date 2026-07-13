@@ -14,7 +14,7 @@ The implementation must retain the integration base's accepted-task recovery, du
 
 - Add a bounded private processed-message ledger to `StateStore`, written atomically with the existing private JSON writer and exposed in `codelink state` as a path only.
 - Resolve a stable identity before dispatching authorized text. Namespace every identity by WeChat account and identity source (`message_id`, `seq`, or derived payload digest), so equal numeric values from different sources or accounts do not collide. When upgrading, also look for the raw ID format used by existing `f9b24d8` `TaskRecord` entries and mark the new identity processed instead of replaying that accepted task.
-- Check the processed ledger before every command or task. Persist command acceptance and ordinary-task acceptance synchronously before `pollOnce` may save the next cursor. Existing `TaskRecord` acceptance remains the task execution source of truth; the ledger prevents every supported inbound type from repeating application-level effects.
+- Check the processed ledger before every command or task. Persist ordinary-task acceptance synchronously before `pollOnce` may save the next cursor; `TaskRecord` acceptance remains the task execution source of truth. Operational commands (`/status`, `/help`, prompt-less `/new`) mark the ledger only after their reply delivery settles, with an in-memory in-flight set deduplicating copies inside one batch, so a crash while a reply is in flight replays the idempotent command instead of dropping the reply.
 - Start native typing and task execution only after the task record and replay ledger are durable. Typing setup, keepalive, cancellation, or failure remains background feedback and cannot delay cursor advancement.
 - Keep allowlist evaluation before context or replay persistence and replace the rejection log with a generic event.
 
@@ -29,9 +29,9 @@ The implementation must retain the integration base's accepted-task recovery, du
 
 - Add an installation credential to `StateStore`. Generate 32 random bytes, fully write a mode-`0600` temporary file, and publish it with an exclusive same-directory hard link so concurrent first users observe one complete token. Keep the state directory private and remove temporary files on every outcome.
 - Reject non-loopback daemon hosts before listening. Authenticate every request before routing with a strict bearer parser and constant-time comparison. Test-only constructor/client options may inject a credential without changing production defaults.
-- Keep the existing poll timestamps and degraded/session-expired state as the readiness source. After authentication, return health status from that source and reject every non-health route with `503` until it is ready.
+- Keep the existing poll timestamps and degraded/session-expired state as the readiness source. Serve the identifier-free `GET /healthz` probe (service name and readiness booleans only) before authentication so installers can classify port ownership; after authentication, return health status from that source and reject every non-health route with `503` until it is ready.
 - Make `DaemonClient` load the installation credential automatically and attach it to every request. Prepare credential and headers before creating the abort timer. Use 10-second read and 10-minute send constants.
-- Make the CLI `status` command print degraded details but exit non-zero when `ok` is false. Replace the cross-platform installer's anonymous HTTP probe with repeated `node dist/cli.cjs status` invocations using `CODELINK_STATE_DIR`; the credential never appears in argv.
+- Make the CLI `status` command print degraded details but exit non-zero when `ok` is false. The cross-platform installer keeps probing the identifier-free `/healthz` endpoint, which also classifies foreign port owners (`E_PORT_OCCUPIED`); the credential never appears in argv.
 
 ### Documentation
 
@@ -40,11 +40,11 @@ The implementation must retain the integration base's accepted-task recovery, du
 
 ## Testing and validation
 
-1. **Behavior §1** → daemon regression covering replay of `/status`, `/help`, `/new`, natural-language new-conversation, and ordinary messages; account/source identity isolation; legacy raw-task lookup; command ledger persistence while replies are still pending at cursor save; and a slow typing request plus long task that cannot block ledger persistence, cursor advancement, or the next poll.
+1. **Behavior §1** → daemon regression covering replay of `/status`, `/help`, `/new`, natural-language new-conversation, and ordinary messages; account/source identity isolation; legacy raw-task lookup; commands staying replayable (ledger unwritten) while replies are pending at cursor save, redelivery after a mid-delivery crash, single reply for in-batch duplicates; and a slow typing request plus long task that cannot block cursor advancement or the next poll.
 2. **Behavior §2** → unauthorized-message regression that snapshots the state directory and stderr, includes a raw user ID and context token, and proves neither appears in state changes or logs.
 3. **Behavior §3** → notification concurrency regression covering fail→success, success→fail, all-fail, exact full-snapshot equality, a generation-only stale CAS, queued login replacement before any context/binding/send work, simultaneous different-recipient delivery, and proof that desktop notification sends do not call `setTyping`.
 4. **Behavior §4** → real HTTP integration test for rejected wildcard/LAN hosts, missing/wrong bearer on every route, authenticated success, token non-disclosure, and a multi-process first-credential race that yields one private token.
-5. **Behavior §5** → real polling/HTTP integration test for initial `503`, first-poll `200`, auth-error `503`, recovery `200`, non-ready business-route `503`, and an installer probe test proving authenticated CLI status with no credential argument.
+5. **Behavior §5** → real polling/HTTP integration test for initial `503`, first-poll `200`, auth-error `503`, recovery `200`, non-ready business-route `503`, and unauthenticated `/healthz` serving identifier-free readiness for the installer probe.
 6. **Behavior §6** → fake-timer client regression proving status/tasks abort at 10 seconds and send remains live until 10 minutes.
 7. **Behavior §7** → fake-timer client regression where credential preparation throws, proving fetch is not called and the timer count remains zero.
 

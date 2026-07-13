@@ -66,6 +66,7 @@ export class CodelinkDaemon {
   private readonly authToken: string;
   private readonly backgroundTasks = new Set<Promise<void>>();
   private readonly pendingThreads = new Map<string, PendingThread>();
+  private readonly inFlightOperationalReplies = new Set<string>();
   private readonly notificationQueues = new Map<string, Promise<void>>();
   private stopping = false;
   private pollingStartedAt?: string;
@@ -229,6 +230,7 @@ export class CodelinkDaemon {
     );
     const messageId = identity.current;
     if (this.store.hasProcessedMessage(messageId)) return;
+    if (this.inFlightOperationalReplies.has(messageId)) return;
     const existingTask =
       this.store.findTask(messageId) ??
       (identity.legacyTaskId
@@ -245,30 +247,22 @@ export class CodelinkDaemon {
       this.store.getContextToken(fromUserId)?.contextToken;
 
     if (text === "/status") {
-      this.store.markProcessedMessage(messageId);
-      return contextToken
-        ? this.trackBackground(
-            this.deliverOperationalText(
-              session,
-              fromUserId,
-              contextToken,
-              this.renderStatus(),
-            ),
-          )
-        : undefined;
+      return this.deliverCommandReply(
+        session,
+        messageId,
+        fromUserId,
+        contextToken,
+        this.renderStatus(),
+      );
     }
     if (text === "/help") {
-      this.store.markProcessedMessage(messageId);
-      return contextToken
-        ? this.trackBackground(
-            this.deliverOperationalText(
-              session,
-              fromUserId,
-              contextToken,
-              "CodeLink：普通消息继续当前 Codex 会话；没有当前会话时自动新建。发送 /new，或直接说“开个新会话”，即可切换。命令：/status、/help。",
-            ),
-          )
-        : undefined;
+      return this.deliverCommandReply(
+        session,
+        messageId,
+        fromUserId,
+        contextToken,
+        "CodeLink：普通消息继续当前 Codex 会话；没有当前会话时自动新建。发送 /new，或直接说“开个新会话”，即可切换。命令：/status、/help。",
+      );
     }
 
     const conversationIntent = parseNewConversationIntent(text);
@@ -276,17 +270,13 @@ export class CodelinkDaemon {
       this.store.clearConversation(fromUserId);
       this.pendingThreads.delete(fromUserId);
       if (!conversationIntent.prompt) {
-        this.store.markProcessedMessage(messageId);
-        return contextToken
-          ? this.trackBackground(
-              this.deliverOperationalText(
-                session,
-                fromUserId,
-                contextToken,
-                "新会话已开启，上一个会话的上下文不会带入。直接发送下一条消息即可开始。",
-              ),
-            )
-          : undefined;
+        return this.deliverCommandReply(
+          session,
+          messageId,
+          fromUserId,
+          contextToken,
+          "新会话已开启，上一个会话的上下文不会带入。直接发送下一条消息即可开始。",
+        );
       }
     }
 
@@ -782,6 +772,30 @@ export class CodelinkDaemon {
         },
       },
     }));
+  }
+
+  // 命令回复在投递结束后才写入 replay ledger：进程若在投递中崩溃，
+  // 重启重放会重新执行幂等命令并补发回复；批内重复由 in-flight 集合去重。
+  private deliverCommandReply(
+    session: WeixinSession,
+    messageId: string,
+    fromUserId: string,
+    contextToken: string | undefined,
+    text: string,
+  ): Promise<void> | undefined {
+    if (!contextToken) {
+      this.store.markProcessedMessage(messageId);
+      return undefined;
+    }
+    this.inFlightOperationalReplies.add(messageId);
+    return this.trackBackground(
+      this.deliverOperationalText(session, fromUserId, contextToken, text).finally(
+        () => {
+          this.store.markProcessedMessage(messageId);
+          this.inFlightOperationalReplies.delete(messageId);
+        },
+      ),
+    );
   }
 
   private async deliverOperationalText(

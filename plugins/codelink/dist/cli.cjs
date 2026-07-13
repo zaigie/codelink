@@ -5631,7 +5631,7 @@ var require_main = __commonJS({
 
 // src/cli.ts
 var import_node_fs7 = __toESM(require("node:fs"), 1);
-var import_node_crypto4 = require("node:crypto");
+var import_node_crypto6 = require("node:crypto");
 
 // src/codex-task-runner.ts
 var import_node_fs2 = __toESM(require("node:fs"), 1);
@@ -6168,7 +6168,9 @@ function preview(value, max = 500) {
 }
 
 // src/daemon.ts
+var import_node_crypto3 = require("node:crypto");
 var import_node_http = __toESM(require("node:http"), 1);
+var import_node_net = require("node:net");
 
 // src/conversation-intent.ts
 function parseNewConversationIntent(text) {
@@ -6481,7 +6483,7 @@ var WeixinClient = class {
 };
 
 // src/weixin/delivery.ts
-var globalDeliveryQueue = Promise.resolve();
+var deliveryQueues = /* @__PURE__ */ new Map();
 var WeixinTextDelivery = class {
   constructor(sender, options = {}) {
     this.sender = sender;
@@ -6495,15 +6497,21 @@ var WeixinTextDelivery = class {
   retryDelaysMs;
   sleep;
   async sendText(input) {
-    const delivery = globalDeliveryQueue.then(
+    const previous = deliveryQueues.get(input.toUserId) ?? Promise.resolve();
+    const delivery = previous.then(
       () => this.deliver(input),
       () => this.deliver(input)
     );
-    globalDeliveryQueue = delivery.then(
+    const tail = delivery.then(
       () => void 0,
       () => void 0
     );
-    return delivery;
+    deliveryQueues.set(input.toUserId, tail);
+    return delivery.finally(() => {
+      if (deliveryQueues.get(input.toUserId) === tail) {
+        deliveryQueues.delete(input.toUserId);
+      }
+    });
   }
   async deliver(input) {
     const chunks = splitTextForDelivery(input.text, 2048);
@@ -6925,13 +6933,14 @@ var WeixinTypingIndicator = class {
 var WeixinSessionExpiredError = class extends Error {
 };
 var CodelinkDaemon = class {
-  constructor(config, store, client, taskRunner) {
+  constructor(config, store, client, taskRunner, options = {}) {
     this.config = config;
     this.store = store;
     this.client = client;
     this.taskRunner = taskRunner;
     this.delivery = new WeixinTextDelivery(client);
     this.typing = new WeixinTypingIndicator(client);
+    this.authToken = options.authToken?.trim() || this.store.getOrCreateDaemonAuthToken();
     this.server = import_node_http.default.createServer((request, response) => {
       void this.handleHttp(request, response);
     });
@@ -6939,8 +6948,11 @@ var CodelinkDaemon = class {
   server;
   delivery;
   typing;
+  authToken;
   backgroundTasks = /* @__PURE__ */ new Set();
   pendingThreads = /* @__PURE__ */ new Map();
+  inFlightOperationalReplies = /* @__PURE__ */ new Set();
+  notificationQueues = /* @__PURE__ */ new Map();
   stopping = false;
   pollingStartedAt;
   lastPollSuccessAt;
@@ -6949,6 +6961,7 @@ var CodelinkDaemon = class {
   degraded = false;
   sessionExpired = false;
   async start() {
+    assertLoopbackHost(this.config.daemon.host);
     const session = this.requireSession();
     await new Promise((resolve, reject) => {
       this.server.once("error", reject);
@@ -7055,50 +7068,55 @@ var CodelinkDaemon = class {
       this.config.security.allowedUserIds.length > 0 ? this.config.security.allowedUserIds : session.userId ? [session.userId] : []
     );
     if (!allowed.has(fromUserId)) {
-      process.stderr.write(`\u5FFD\u7565\u672A\u6388\u6743\u5FAE\u4FE1\u7528\u6237\uFF1A${fromUserId}
-`);
+      process.stderr.write("\u5FFD\u7565\u672A\u6388\u6743\u5FAE\u4FE1\u6D88\u606F\n");
+      return;
+    }
+    const identity = resolveMessageIdentity(
+      session.accountId,
+      fromUserId,
+      message
+    );
+    const messageId = identity.current;
+    if (this.store.hasProcessedMessage(messageId)) return;
+    if (this.inFlightOperationalReplies.has(messageId)) return;
+    const existingTask = this.store.findTask(messageId) ?? (identity.legacyTaskId ? this.store.findTask(identity.legacyTaskId) : null);
+    if (existingTask?.fromUserId === fromUserId) {
+      this.store.markProcessedMessage(messageId);
       return;
     }
     if (message.context_token)
       this.store.saveContextToken(fromUserId, message.context_token);
-    const messageId = String(
-      message.message_id ?? message.seq ?? `${fromUserId}-${message.create_time_ms ?? Date.now()}`
-    );
-    if (this.store.findTask(messageId)) return;
     const contextToken = message.context_token || this.store.getContextToken(fromUserId)?.contextToken;
     if (text === "/status") {
-      return contextToken ? this.trackBackground(
-        this.deliverOperationalText(
-          session,
-          fromUserId,
-          contextToken,
-          this.renderStatus()
-        )
-      ) : void 0;
+      return this.deliverCommandReply(
+        session,
+        messageId,
+        fromUserId,
+        contextToken,
+        this.renderStatus()
+      );
     }
     if (text === "/help") {
-      return contextToken ? this.trackBackground(
-        this.deliverOperationalText(
-          session,
-          fromUserId,
-          contextToken,
-          "CodeLink\uFF1A\u666E\u901A\u6D88\u606F\u7EE7\u7EED\u5F53\u524D Codex \u4F1A\u8BDD\uFF1B\u6CA1\u6709\u5F53\u524D\u4F1A\u8BDD\u65F6\u81EA\u52A8\u65B0\u5EFA\u3002\u53D1\u9001 /new\uFF0C\u6216\u76F4\u63A5\u8BF4\u201C\u5F00\u4E2A\u65B0\u4F1A\u8BDD\u201D\uFF0C\u5373\u53EF\u5207\u6362\u3002\u547D\u4EE4\uFF1A/status\u3001/help\u3002"
-        )
-      ) : void 0;
+      return this.deliverCommandReply(
+        session,
+        messageId,
+        fromUserId,
+        contextToken,
+        "CodeLink\uFF1A\u666E\u901A\u6D88\u606F\u7EE7\u7EED\u5F53\u524D Codex \u4F1A\u8BDD\uFF1B\u6CA1\u6709\u5F53\u524D\u4F1A\u8BDD\u65F6\u81EA\u52A8\u65B0\u5EFA\u3002\u53D1\u9001 /new\uFF0C\u6216\u76F4\u63A5\u8BF4\u201C\u5F00\u4E2A\u65B0\u4F1A\u8BDD\u201D\uFF0C\u5373\u53EF\u5207\u6362\u3002\u547D\u4EE4\uFF1A/status\u3001/help\u3002"
+      );
     }
     const conversationIntent = parseNewConversationIntent(text);
     if (conversationIntent.startNew) {
       this.store.clearConversation(fromUserId);
       this.pendingThreads.delete(fromUserId);
       if (!conversationIntent.prompt) {
-        return contextToken ? this.trackBackground(
-          this.deliverOperationalText(
-            session,
-            fromUserId,
-            contextToken,
-            "\u65B0\u4F1A\u8BDD\u5DF2\u5F00\u542F\uFF0C\u4E0A\u4E00\u4E2A\u4F1A\u8BDD\u7684\u4E0A\u4E0B\u6587\u4E0D\u4F1A\u5E26\u5165\u3002\u76F4\u63A5\u53D1\u9001\u4E0B\u4E00\u6761\u6D88\u606F\u5373\u53EF\u5F00\u59CB\u3002"
-          )
-        ) : void 0;
+        return this.deliverCommandReply(
+          session,
+          messageId,
+          fromUserId,
+          contextToken,
+          "\u65B0\u4F1A\u8BDD\u5DF2\u5F00\u542F\uFF0C\u4E0A\u4E00\u4E2A\u4F1A\u8BDD\u7684\u4E0A\u4E0B\u6587\u4E0D\u4F1A\u5E26\u5165\u3002\u76F4\u63A5\u53D1\u9001\u4E0B\u4E00\u6761\u6D88\u606F\u5373\u53EF\u5F00\u59CB\u3002"
+        );
       }
     }
     const conversationSnapshot = this.store.getConversationSnapshot(fromUserId);
@@ -7127,8 +7145,11 @@ var CodelinkDaemon = class {
       status: "accepted",
       startedAt: now
     })) {
+      ownedPending?.settle();
+      this.store.markProcessedMessage(messageId);
       return;
     }
+    this.store.markProcessedMessage(messageId);
     const execution = this.executeTask(
       session,
       input,
@@ -7484,6 +7505,23 @@ var CodelinkDaemon = class {
       }
     }));
   }
+  // 命令回复在投递结束后才写入 replay ledger：进程若在投递中崩溃，
+  // 重启重放会重新执行幂等命令并补发回复；批内重复由 in-flight 集合去重。
+  deliverCommandReply(session, messageId, fromUserId, contextToken, text) {
+    if (!contextToken) {
+      this.store.markProcessedMessage(messageId);
+      return void 0;
+    }
+    this.inFlightOperationalReplies.add(messageId);
+    return this.trackBackground(
+      this.deliverOperationalText(session, fromUserId, contextToken, text).finally(
+        () => {
+          this.store.markProcessedMessage(messageId);
+          this.inFlightOperationalReplies.delete(messageId);
+        }
+      )
+    );
+  }
   async deliverOperationalText(session, toUserId, contextToken, text) {
     try {
       const receipt = await this.delivery.sendText({
@@ -7533,17 +7571,31 @@ var CodelinkDaemon = class {
   }
   async handleHttp(request, response) {
     try {
+      if (request.method === "GET" && request.url === "/healthz") {
+        const status2 = this.getStatus();
+        return this.json(response, status2.ok ? 200 : 503, {
+          service: "codelink",
+          ok: status2.ok,
+          degraded: status2.degraded,
+          sessionExpired: status2.sessionExpired
+        });
+      }
+      if (!this.isAuthorized(request)) {
+        response.writeHead(401, {
+          "Content-Type": "application/json; charset=utf-8",
+          "WWW-Authenticate": "Bearer"
+        });
+        response.end(JSON.stringify({ ok: false, error: "unauthorized" }));
+        return;
+      }
+      const status = this.getStatus();
       if (request.method === "GET" && request.url === "/health") {
-        const status = this.getStatus();
         return this.json(response, status.ok ? 200 : 503, status);
       }
-      if (request.method === "GET" && request.url === "/healthz") {
-        const status = this.getStatus();
-        return this.json(response, status.ok ? 200 : 503, {
-          service: "codelink",
-          ok: status.ok,
-          degraded: status.degraded,
-          sessionExpired: status.sessionExpired
+      if (!status.ok) {
+        return this.json(response, 503, {
+          ok: false,
+          error: "daemon not ready"
         });
       }
       if (request.method === "GET" && request.url?.startsWith("/tasks")) {
@@ -7612,52 +7664,72 @@ var CodelinkDaemon = class {
     return this.store.listTasks(limit).map(toPublicTaskRecord);
   }
   async sendNotification(text, explicitUserId, requestedThreadId) {
-    const session = this.requireSession();
-    const toUserId = explicitUserId || session.userId;
+    const sessionAtEnqueue = { ...this.requireSession() };
+    const toUserId = explicitUserId || sessionAtEnqueue.userId;
     if (!toUserId)
       throw new Error("\u6CA1\u6709\u9ED8\u8BA4\u5FAE\u4FE1\u7528\u6237\uFF1B\u8BF7\u5148\u626B\u7801\u767B\u5F55\u5E76\u4ECE\u5FAE\u4FE1\u53D1\u9001\u4E00\u6761\u6D88\u606F");
-    const allowed = new Set(
-      this.config.security.allowedUserIds.length ? this.config.security.allowedUserIds : [session.userId].filter(Boolean)
-    );
-    if (!allowed.has(toUserId))
-      throw new Error(`\u7528\u6237 ${toUserId} \u4E0D\u5728 allowedUserIds \u4E2D`);
-    const context = this.store.getContextToken(toUserId);
-    if (!context)
-      throw new Error(
-        "\u6CA1\u6709\u53EF\u7528\u7684 context_token\uFF1B\u8BF7\u5148\u4ECE\u76EE\u6807\u5FAE\u4FE1\u8D26\u53F7\u5411 CodeLink \u53D1\u9001\u4E00\u6761\u6D88\u606F"
+    return this.enqueueNotification(toUserId, async () => {
+      const session = this.requireSession();
+      if (!sameWeixinSession(session, sessionAtEnqueue)) {
+        throw new Error("\u5FAE\u4FE1\u4F1A\u8BDD\u5DF2\u5728\u901A\u77E5\u6392\u961F\u671F\u95F4\u53D1\u751F\u53D8\u5316\uFF0C\u8BF7\u91CD\u8BD5");
+      }
+      const allowed = new Set(
+        this.config.security.allowedUserIds.length ? this.config.security.allowedUserIds : [session.userId].filter(Boolean)
       );
-    const threadId = isCodexThreadId(requestedThreadId) ? requestedThreadId : void 0;
-    const previousBinding = this.store.getConversation(toUserId);
-    if (threadId) this.store.bindConversation(toUserId, { threadId });
-    const notificationBinding = threadId ? this.store.getConversation(toUserId) : null;
-    try {
-      const receipt = await this.delivery.sendText({
-        session,
-        toUserId,
-        contextToken: context.contextToken,
-        text: formatTaskNotification(text, Boolean(threadId))
-      });
-      if (receipt.sentChunks !== receipt.totalChunks) {
+      if (!allowed.has(toUserId))
+        throw new Error(`\u7528\u6237 ${toUserId} \u4E0D\u5728 allowedUserIds \u4E2D`);
+      const context = this.store.getContextToken(toUserId);
+      if (!context)
         throw new Error(
-          receipt.error ?? `\u5FAE\u4FE1\u901A\u77E5\u672A\u5B8C\u6574\u6295\u9012\uFF08\u5DF2\u53D1\u9001 ${receipt.sentChunks} \u6BB5\uFF09`
+          "\u6CA1\u6709\u53EF\u7528\u7684 context_token\uFF1B\u8BF7\u5148\u4ECE\u76EE\u6807\u5FAE\u4FE1\u8D26\u53F7\u5411 CodeLink \u53D1\u9001\u4E00\u6761\u6D88\u606F"
         );
-      }
-    } catch (error) {
-      if (threadId && notificationBinding) {
-        this.store.replaceConversationIfUnchanged(
+      const threadId = isCodexThreadId(requestedThreadId) ? requestedThreadId : void 0;
+      const previousSnapshot = this.store.getConversationSnapshot(toUserId);
+      if (threadId) this.store.bindConversation(toUserId, { threadId });
+      const notificationSnapshot = threadId ? this.store.getConversationSnapshot(toUserId) : null;
+      try {
+        const receipt = await this.delivery.sendText({
+          session,
           toUserId,
-          notificationBinding,
-          previousBinding
-        );
+          contextToken: context.contextToken,
+          text: formatTaskNotification(text, Boolean(threadId))
+        });
+        if (receipt.sentChunks !== receipt.totalChunks) {
+          throw new Error(
+            receipt.error ?? `\u5FAE\u4FE1\u901A\u77E5\u672A\u5B8C\u6574\u6295\u9012\uFF08\u5DF2\u53D1\u9001 ${receipt.sentChunks} \u6BB5\uFF09`
+          );
+        }
+      } catch (error) {
+        if (threadId && notificationSnapshot) {
+          this.store.replaceConversationSnapshotIfUnchanged(
+            toUserId,
+            notificationSnapshot,
+            previousSnapshot
+          );
+        }
+        throw error;
       }
-      throw error;
-    }
-    return {
-      ok: true,
-      toUserId,
-      conversationBound: Boolean(threadId),
-      ...threadId ? { threadId } : {}
-    };
+      return {
+        ok: true,
+        toUserId,
+        conversationBound: Boolean(threadId),
+        ...threadId ? { threadId } : {}
+      };
+    });
+  }
+  enqueueNotification(toUserId, operation) {
+    const previous = this.notificationQueues.get(toUserId) ?? Promise.resolve();
+    const result = previous.catch(() => void 0).then(operation);
+    const tail = result.then(
+      () => void 0,
+      () => void 0
+    );
+    this.notificationQueues.set(toUserId, tail);
+    return result.finally(() => {
+      if (this.notificationQueues.get(toUserId) === tail) {
+        this.notificationQueues.delete(toUserId);
+      }
+    });
   }
   requireSession() {
     const session = this.store.loadSession();
@@ -7669,6 +7741,15 @@ var CodelinkDaemon = class {
       "Content-Type": "application/json; charset=utf-8"
     });
     response.end(JSON.stringify(value));
+  }
+  isAuthorized(request) {
+    const authorization = request.headers.authorization;
+    if (!authorization) return false;
+    const match = /^Bearer ([A-Za-z0-9_-]+)$/.exec(authorization);
+    if (!match) return false;
+    const provided = Buffer.from(match[1], "utf8");
+    const expected = Buffer.from(this.authToken, "utf8");
+    return provided.length === expected.length && (0, import_node_crypto3.timingSafeEqual)(provided, expected);
   }
 };
 async function readJsonBody(request) {
@@ -7691,6 +7772,48 @@ function formatTaskNotification(text, conversationBound) {
   return `${text.trim()}
 
 ${footer}`;
+}
+function resolveMessageIdentity(accountId, fromUserId, message) {
+  const namespace = `weixin:${encodeURIComponent(accountId)}`;
+  if (message.message_id !== void 0 && message.message_id !== null) {
+    const value = String(message.message_id);
+    return {
+      current: `${namespace}:message_id:${value}`,
+      legacyTaskId: value
+    };
+  }
+  if (message.seq !== void 0 && message.seq !== null) {
+    const value = String(message.seq);
+    return {
+      current: `${namespace}:seq:${value}`,
+      legacyTaskId: value
+    };
+  }
+  const digest = (0, import_node_crypto3.createHash)("sha256").update(
+    JSON.stringify({
+      fromUserId: message.from_user_id ?? null,
+      toUserId: message.to_user_id ?? null,
+      messageType: message.message_type ?? null,
+      messageState: message.message_state ?? null,
+      createTimeMs: message.create_time_ms ?? null,
+      items: message.item_list ?? []
+    })
+  ).digest("base64url");
+  return {
+    current: `${namespace}:derived:${digest}`,
+    ...message.create_time_ms !== void 0 ? { legacyTaskId: `${fromUserId}-${message.create_time_ms}` } : {}
+  };
+}
+function sameWeixinSession(current, expected) {
+  return current.accountId === expected.accountId && current.token === expected.token && current.userId === expected.userId && current.baseUrl === expected.baseUrl;
+}
+function assertLoopbackHost(host) {
+  const normalized = host.trim().toLowerCase();
+  if (normalized === "::1" || normalized === "0:0:0:0:0:0:0:1") {
+    return;
+  }
+  if ((0, import_node_net.isIP)(normalized) === 4 && normalized.split(".")[0] === "127") return;
+  throw new Error(`CodeLink daemon host must be loopback, received ${host}`);
 }
 function previewText(value, max = 500) {
   const normalized = value.replace(/\s+/g, " ").trim();
@@ -7735,322 +7858,16 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// src/daemon-client.ts
-var DaemonClient = class {
-  baseUrl;
-  fetchImpl;
-  constructor(options = {}) {
-    this.baseUrl = options.baseUrl ?? process.env.CODELINK_DAEMON_URL ?? "http://127.0.0.1:18791";
-    this.fetchImpl = options.fetchImpl ?? fetch;
-  }
-  async status() {
-    return this.request("/health", { method: "GET" }, true);
-  }
-  async health() {
-    return this.request("/healthz", { method: "GET" }, true);
-  }
-  async recentTasks() {
-    return this.request("/tasks", { method: "GET" });
-  }
-  async send(request) {
-    return this.request("/send", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        text: request.text,
-        ...request.userId ? { userId: request.userId } : {},
-        ...request.threadId ? { threadId: request.threadId } : {}
-      })
-    });
-  }
-  async request(pathname, init, returnErrorBody = false) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 1e4);
-    try {
-      const response = await this.fetchImpl(new URL(pathname, this.baseUrl), {
-        ...init,
-        signal: controller.signal
-      });
-      const text = await response.text();
-      let data;
-      try {
-        data = JSON.parse(text);
-      } catch {
-        data = { ok: false, error: text || `HTTP ${response.status}` };
-      }
-      if (!response.ok && !returnErrorBody) {
-        const error = data && typeof data === "object" && "error" in data ? String(data.error) : `HTTP ${response.status}`;
-        throw new Error(error);
-      }
-      return data;
-    } catch (error) {
-      if (error instanceof Error && error.name === "AbortError") {
-        throw new Error("CodeLink daemon \u8BF7\u6C42\u8D85\u65F6");
-      }
-      throw error;
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-};
-
-// src/doctor.ts
-var import_node_fs3 = __toESM(require("node:fs"), 1);
-var import_node_path2 = __toESM(require("node:path"), 1);
-var import_node_crypto3 = require("node:crypto");
-function createDoctorReport(params) {
-  const status = asRecord(params.daemonStatus);
-  const receipt = params.store.loadInstallReceipt();
-  const runtimeReady = validateRuntime(params.store.path("runtime"));
-  const plugin = validatePlugin(receipt);
-  const pluginInstalled = plugin.installed;
-  const mcpBundleReady = plugin.mcpReady;
-  const daemonHealthy = status?.ok === true;
-  const wechatLoggedIn = Boolean(params.store.loadSession()) && status?.sessionExpired !== true;
-  const defaultRecipientReady = status?.hasDefaultContextToken === true;
-  const currentConversationBound = typeof status?.activeThreadId === "string" && status.activeThreadId.length > 0;
-  return {
-    ok: runtimeReady && pluginInstalled && mcpBundleReady && daemonHealthy && wechatLoggedIn,
-    runtimeReady,
-    pluginInstalled,
-    mcpBundleReady,
-    daemonHealthy,
-    wechatLoggedIn,
-    defaultRecipientReady,
-    currentConversationBound,
-    newTaskRequired: true
-  };
-}
-function validateRuntime(runtimeDir) {
-  try {
-    const manifest = asRecord(
-      JSON.parse(
-        import_node_fs3.default.readFileSync(import_node_path2.default.join(runtimeDir, "runtime-manifest.json"), "utf8")
-      )
-    );
-    const files = asRecord(manifest?.files);
-    if (manifest?.schemaVersion !== 1 || !files) return false;
-    for (const name of ["cli.cjs", "mcp.js"]) {
-      const expected = files[name];
-      if (typeof expected !== "string") return false;
-      const actual = (0, import_node_crypto3.createHash)("sha256").update(import_node_fs3.default.readFileSync(import_node_path2.default.join(runtimeDir, name))).digest("hex");
-      if (actual !== expected) return false;
-    }
-    return true;
-  } catch {
-    return false;
-  }
-}
-function validatePlugin(receipt) {
-  if (receipt?.schemaVersion !== 1 || receipt.pluginInstalled !== true || receipt.mcpBundleReady !== true || typeof receipt.pluginRoot !== "string" || typeof receipt.pluginVersion !== "string" || typeof receipt.mcpSha256 !== "string") {
-    return { installed: false, mcpReady: false };
-  }
-  try {
-    const manifest = asRecord(
-      JSON.parse(
-        import_node_fs3.default.readFileSync(
-          import_node_path2.default.join(receipt.pluginRoot, ".codex-plugin", "plugin.json"),
-          "utf8"
-        )
-      )
-    );
-    const installed = manifest?.name === "codelink" && manifest.version === receipt.pluginVersion;
-    if (!installed) return { installed: false, mcpReady: false };
-    const mcp = asRecord(
-      JSON.parse(
-        import_node_fs3.default.readFileSync(import_node_path2.default.join(receipt.pluginRoot, ".mcp.json"), "utf8")
-      )
-    );
-    const servers = asRecord(mcp?.mcpServers);
-    const codelink = asRecord(servers?.codelink);
-    const args = Array.isArray(codelink?.args) ? codelink.args : [];
-    const mcpPath = import_node_path2.default.join(receipt.pluginRoot, "dist", "mcp.js");
-    const mcpHash = (0, import_node_crypto3.createHash)("sha256").update(import_node_fs3.default.readFileSync(mcpPath)).digest("hex");
-    const mcpReady = codelink?.command === "node" && args.includes("./dist/mcp.js") && mcpHash === receipt.mcpSha256;
-    return { installed: true, mcpReady };
-  } catch {
-    return { installed: false, mcpReady: false };
-  }
-}
-function asRecord(value) {
-  return value && typeof value === "object" ? value : null;
-}
-
-// src/openclaw-state.ts
-var import_node_fs4 = __toESM(require("node:fs"), 1);
-var import_node_os = __toESM(require("node:os"), 1);
-var import_node_path3 = __toESM(require("node:path"), 1);
-function exportOpenClawState(params) {
-  const stateDir = import_node_path3.default.resolve(
-    params.stateDir || process.env.OPENCLAW_STATE_DIR || import_node_path3.default.join(import_node_os.default.homedir(), ".openclaw")
-  );
-  const accountsDir = import_node_path3.default.join(stateDir, "openclaw-weixin", "accounts");
-  const accountId = params.accountId || selectAccountId(stateDir, accountsDir);
-  const accountPath = import_node_path3.default.join(accountsDir, `${accountId}.json`);
-  const account = readObject(accountPath);
-  const token = stringValue(account.token);
-  if (!token) throw new Error(`OpenClaw \u8D26\u53F7\u6587\u4EF6\u7F3A\u5C11 token\uFF1A${accountPath}`);
-  const sync = readObject(
-    import_node_path3.default.join(accountsDir, `${accountId}.sync.json`),
-    true
-  );
-  const contextTokens = readStringMap(
-    import_node_path3.default.join(accountsDir, `${accountId}.context-tokens.json`)
-  );
-  const openclawConfig = readObject(import_node_path3.default.join(stateDir, "openclaw.json"), true);
-  const channel = readChannelConfig(openclawConfig, accountId);
-  const bundle = {
-    schemaVersion: 1,
-    exportedAt: (/* @__PURE__ */ new Date()).toISOString(),
-    source: "openclaw-weixin",
-    account: {
-      accountId,
-      token,
-      baseUrl: stringValue(account.baseUrl) || stringValue(channel.account.baseUrl) || stringValue(channel.section.baseUrl) || "https://ilinkai.weixin.qq.com",
-      ...stringValue(account.userId) ? { userId: stringValue(account.userId) } : {},
-      ...stringValue(account.savedAt) ? { savedAt: stringValue(account.savedAt) } : {}
-    },
-    ...stringValue(sync.get_updates_buf) ? { getUpdatesBuf: stringValue(sync.get_updates_buf) } : {},
-    ...Object.keys(contextTokens).length ? { contextTokens } : {},
-    ...stringValue(channel.account.routeTag) || stringValue(channel.section.routeTag) ? {
-      routeTag: stringValue(channel.account.routeTag) || stringValue(channel.section.routeTag)
-    } : {},
-    ...stringValue(channel.account.botAgent) || stringValue(channel.section.botAgent) ? {
-      botAgent: stringValue(channel.account.botAgent) || stringValue(channel.section.botAgent)
-    } : {}
-  };
-  const outputPath = import_node_path3.default.resolve(params.outputPath);
-  import_node_fs4.default.mkdirSync(import_node_path3.default.dirname(outputPath), { recursive: true, mode: 448 });
-  import_node_fs4.default.writeFileSync(outputPath, `${JSON.stringify(bundle, null, 2)}
-`, {
-    encoding: "utf8",
-    mode: 384
-  });
-  try {
-    import_node_fs4.default.chmodSync(outputPath, 384);
-  } catch {
-  }
-  return bundle;
-}
-function importOpenClawState(params) {
-  const inputPath = import_node_path3.default.resolve(params.inputPath);
-  const bundle = JSON.parse(
-    import_node_fs4.default.readFileSync(inputPath, "utf8")
-  );
-  validateBundle(bundle);
-  const session = {
-    accountId: normalizeAccountId(bundle.account.accountId),
-    token: bundle.account.token,
-    baseUrl: normalizeBaseUrl(bundle.account.baseUrl),
-    ...bundle.account.userId ? { userId: bundle.account.userId } : {},
-    savedAt: bundle.account.savedAt || (/* @__PURE__ */ new Date()).toISOString()
-  };
-  params.store.saveSession(session);
-  if (bundle.getUpdatesBuf !== void 0) {
-    params.store.saveSyncCursor(bundle.getUpdatesBuf);
-  }
-  const contextTokensImported = params.store.importContextTokens(
-    bundle.contextTokens ?? {}
-  );
-  const config = params.store.loadConfig();
-  if (bundle.routeTag) config.weixin.routeTag = bundle.routeTag;
-  if (bundle.botAgent) config.weixin.botAgent = bundle.botAgent;
-  if (session.userId && !config.security.allowedUserIds.includes(session.userId)) {
-    config.security.allowedUserIds.push(session.userId);
-  }
-  params.store.saveConfig(config);
-  return {
-    accountId: session.accountId,
-    ...session.userId ? { userId: session.userId } : {},
-    tokenPresent: true,
-    syncCursorImported: bundle.getUpdatesBuf !== void 0,
-    contextTokensImported,
-    routeTagImported: Boolean(bundle.routeTag),
-    sourceFile: inputPath
-  };
-}
-function selectAccountId(stateDir, accountsDir) {
-  const indexPath = import_node_path3.default.join(stateDir, "openclaw-weixin", "accounts.json");
-  try {
-    const index = JSON.parse(import_node_fs4.default.readFileSync(indexPath, "utf8"));
-    if (Array.isArray(index)) {
-      const ids = index.filter(
-        (value) => typeof value === "string" && value.trim().length > 0
-      );
-      if (ids.length) return ids[ids.length - 1];
-    }
-  } catch {
-  }
-  let candidates = [];
-  try {
-    candidates = import_node_fs4.default.readdirSync(accountsDir).filter(
-      (name) => name.endsWith(".json") && !name.endsWith(".sync.json") && !name.endsWith(".context-tokens.json")
-    ).sort(
-      (a, b) => import_node_fs4.default.statSync(import_node_path3.default.join(accountsDir, a)).mtimeMs - import_node_fs4.default.statSync(import_node_path3.default.join(accountsDir, b)).mtimeMs
-    );
-  } catch {
-  }
-  if (!candidates.length) {
-    throw new Error(`\u672A\u627E\u5230 OpenClaw \u5FAE\u4FE1\u8D26\u53F7\u72B6\u6001\uFF1A${accountsDir}`);
-  }
-  return candidates[candidates.length - 1].replace(/\.json$/, "");
-}
-function readChannelConfig(config, accountId) {
-  const channels = objectValue(config.channels);
-  const section = objectValue(channels["openclaw-weixin"]);
-  const accounts = objectValue(section.accounts);
-  return { section, account: objectValue(accounts[accountId]) };
-}
-function readObject(filePath, optional = false) {
-  try {
-    return objectValue(JSON.parse(import_node_fs4.default.readFileSync(filePath, "utf8")));
-  } catch (error) {
-    if (optional) return {};
-    throw new Error(`\u65E0\u6CD5\u8BFB\u53D6 ${filePath}: ${String(error)}`);
-  }
-}
-function readStringMap(filePath) {
-  const value = readObject(filePath, true);
-  return Object.fromEntries(
-    Object.entries(value).filter(
-      (entry) => typeof entry[1] === "string" && entry[1].length > 0
-    )
-  );
-}
-function objectValue(value) {
-  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
-}
-function stringValue(value) {
-  return typeof value === "string" ? value.trim() : "";
-}
-function validateBundle(bundle) {
-  if (bundle.schemaVersion !== 1 || bundle.source !== "openclaw-weixin") {
-    throw new Error("\u4E0D\u652F\u6301\u7684 OpenClaw \u5FAE\u4FE1\u72B6\u6001\u5305\u683C\u5F0F");
-  }
-  if (!bundle.account?.accountId || !bundle.account?.token || !bundle.account?.baseUrl) {
-    throw new Error("\u72B6\u6001\u5305\u7F3A\u5C11 accountId\u3001token \u6216 baseUrl");
-  }
-}
-function normalizeAccountId(value) {
-  return value.trim().replaceAll("@", "-").replaceAll(".", "-").replace(/[^A-Za-z0-9_-]/g, "-");
-}
-function normalizeBaseUrl(value) {
-  const trimmed = value.trim();
-  if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
-    return trimmed;
-  }
-  return `https://${trimmed}`;
-}
-
 // src/state.ts
-var import_node_fs5 = __toESM(require("node:fs"), 1);
-var import_node_path5 = __toESM(require("node:path"), 1);
+var import_node_crypto4 = require("node:crypto");
+var import_node_fs3 = __toESM(require("node:fs"), 1);
+var import_node_path3 = __toESM(require("node:path"), 1);
 
 // src/config.ts
-var import_node_os2 = __toESM(require("node:os"), 1);
-var import_node_path4 = __toESM(require("node:path"), 1);
+var import_node_os = __toESM(require("node:os"), 1);
+var import_node_path2 = __toESM(require("node:path"), 1);
 function resolveStateDir() {
-  return process.env.CODELINK_STATE_DIR?.trim() || import_node_path4.default.join(import_node_os2.default.homedir(), ".codelink");
+  return process.env.CODELINK_STATE_DIR?.trim() || import_node_path2.default.join(import_node_os.default.homedir(), ".codelink");
 }
 function defaultConfig() {
   return {
@@ -8065,8 +7882,8 @@ function defaultConfig() {
       botAgent: "CodeLink/0.1.0"
     },
     codex: {
-      taskWorkspaceRoot: import_node_path4.default.join(
-        import_node_os2.default.homedir(),
+      taskWorkspaceRoot: import_node_path2.default.join(
+        import_node_os.default.homedir(),
         "Documents",
         "Codex",
         "CodeLink"
@@ -8094,20 +7911,23 @@ function parseConfig(value) {
 }
 
 // src/state.ts
+var MAX_PROCESSED_MESSAGE_IDS = 5e3;
+var DAEMON_AUTH_TOKEN_FILE = "daemon-api-token";
 var StateStore = class {
   dir;
+  processedMessages;
   constructor(dir = resolveStateDir()) {
     this.dir = dir;
   }
   ensure() {
-    import_node_fs5.default.mkdirSync(this.dir, { recursive: true, mode: 448 });
+    import_node_fs3.default.mkdirSync(this.dir, { recursive: true, mode: 448 });
     try {
-      import_node_fs5.default.chmodSync(this.dir, 448);
+      import_node_fs3.default.chmodSync(this.dir, 448);
     } catch {
     }
   }
   path(name) {
-    return import_node_path5.default.join(this.dir, name);
+    return import_node_path3.default.join(this.dir, name);
   }
   loadConfig() {
     return parseConfig(this.readJson("config.json"));
@@ -8133,6 +7953,71 @@ var StateStore = class {
   }
   saveSyncCursor(cursor) {
     this.writeJson("get-updates.json", { get_updates_buf: cursor }, 384);
+  }
+  loadDaemonAuthToken() {
+    this.ensure();
+    try {
+      const token = import_node_fs3.default.readFileSync(this.path(DAEMON_AUTH_TOKEN_FILE), "utf8").trim();
+      if (!token) throw new Error("daemon API credential file is empty");
+      return token;
+    } catch (error) {
+      if (isNodeError(error) && error.code === "ENOENT") return null;
+      throw error;
+    }
+  }
+  getOrCreateDaemonAuthToken() {
+    const existing = this.loadDaemonAuthToken();
+    if (existing) return existing;
+    const token = (0, import_node_crypto4.randomBytes)(32).toString("base64url");
+    const destination = this.path(DAEMON_AUTH_TOKEN_FILE);
+    const temporary = this.path(
+      `${DAEMON_AUTH_TOKEN_FILE}.${process.pid}.${(0, import_node_crypto4.randomBytes)(8).toString("hex")}.tmp`
+    );
+    import_node_fs3.default.writeFileSync(temporary, `${token}
+`, {
+      encoding: "utf8",
+      flag: "wx",
+      mode: 384
+    });
+    try {
+      try {
+        import_node_fs3.default.linkSync(temporary, destination);
+        try {
+          import_node_fs3.default.chmodSync(destination, 384);
+        } catch {
+        }
+        return token;
+      } catch (error) {
+        if (!isNodeError(error) || error.code !== "EEXIST") throw error;
+        const winner = this.loadDaemonAuthToken();
+        if (!winner) throw new Error("daemon API credential creation lost");
+        return winner;
+      }
+    } finally {
+      import_node_fs3.default.rmSync(temporary, { force: true });
+    }
+  }
+  hasProcessedMessage(messageId) {
+    return this.loadProcessedMessages().index.has(messageId);
+  }
+  markProcessedMessage(messageId) {
+    const cache = this.loadProcessedMessages();
+    if (cache.index.has(messageId)) return false;
+    cache.messageIds.push(messageId);
+    cache.index.add(messageId);
+    if (cache.messageIds.length > MAX_PROCESSED_MESSAGE_IDS) {
+      const evicted = cache.messageIds.splice(
+        0,
+        cache.messageIds.length - MAX_PROCESSED_MESSAGE_IDS
+      );
+      for (const evictedId of evicted) cache.index.delete(evictedId);
+    }
+    this.writeJson(
+      "processed-messages.json",
+      { messageIds: cache.messageIds },
+      384
+    );
+    return true;
   }
   loadContextTokens() {
     const data = this.readJson("context-tokens.json");
@@ -8206,6 +8091,26 @@ var StateStore = class {
     this.writeJson("conversations.json", state, 384);
     return true;
   }
+  replaceConversationSnapshotIfUnchanged(userId, expected, replacement) {
+    const state = this.loadConversationState();
+    const current = state.conversations[userId] ?? null;
+    const currentGeneration = state.generations[userId] ?? 0;
+    if (currentGeneration !== expected.generation || !sameConversationBinding(current, expected.binding)) {
+      return false;
+    }
+    if (replacement.binding) {
+      state.conversations[userId] = { ...replacement.binding };
+    } else {
+      delete state.conversations[userId];
+    }
+    if (replacement.generation === 0) {
+      delete state.generations[userId];
+    } else {
+      state.generations[userId] = replacement.generation;
+    }
+    this.writeJson("conversations.json", state, 384);
+    return true;
+  }
   clearConversation(userId) {
     const state = this.loadConversationState();
     delete state.conversations[userId];
@@ -8260,10 +8165,31 @@ var StateStore = class {
       generations: data?.generations && typeof data.generations === "object" ? data.generations : {}
     };
   }
+  loadProcessedMessageState() {
+    const data = this.readJson(
+      "processed-messages.json"
+    );
+    return {
+      messageIds: Array.isArray(data?.messageIds) ? data.messageIds.filter(
+        (messageId) => typeof messageId === "string"
+      ) : []
+    };
+  }
+  // 单 daemon 进程独占状态目录，因此缓存不需要跨进程失效。
+  loadProcessedMessages() {
+    if (!this.processedMessages) {
+      const state = this.loadProcessedMessageState();
+      this.processedMessages = {
+        messageIds: state.messageIds,
+        index: new Set(state.messageIds)
+      };
+    }
+    return this.processedMessages;
+  }
   readJson(name) {
     this.ensure();
     try {
-      return JSON.parse(import_node_fs5.default.readFileSync(this.path(name), "utf8"));
+      return JSON.parse(import_node_fs3.default.readFileSync(this.path(name), "utf8"));
     } catch {
       return null;
     }
@@ -8272,14 +8198,14 @@ var StateStore = class {
     this.ensure();
     const destination = this.path(name);
     const temporary = `${destination}.${process.pid}.tmp`;
-    import_node_fs5.default.writeFileSync(temporary, `${JSON.stringify(value, null, 2)}
+    import_node_fs3.default.writeFileSync(temporary, `${JSON.stringify(value, null, 2)}
 `, {
       encoding: "utf8",
       mode
     });
-    import_node_fs5.default.renameSync(temporary, destination);
+    import_node_fs3.default.renameSync(temporary, destination);
     try {
-      import_node_fs5.default.chmodSync(destination, mode);
+      import_node_fs3.default.chmodSync(destination, mode);
     } catch {
     }
   }
@@ -8292,6 +8218,344 @@ function nextConversationUpdatedAt(current) {
   const previous = current ? Date.parse(current.updatedAt) : Number.NaN;
   const timestamp = Number.isFinite(previous) ? Math.max(Date.now(), previous + 1) : Date.now();
   return new Date(timestamp).toISOString();
+}
+function isNodeError(error) {
+  return error instanceof Error && "code" in error;
+}
+
+// src/daemon-client.ts
+var DaemonClient = class _DaemonClient {
+  baseUrl;
+  fetchImpl;
+  store;
+  authToken;
+  static READ_TIMEOUT_MS = 1e4;
+  static SEND_TIMEOUT_MS = 10 * 6e4;
+  constructor(options = {}) {
+    this.baseUrl = options.baseUrl ?? process.env.CODELINK_DAEMON_URL ?? "http://127.0.0.1:18791";
+    this.fetchImpl = options.fetchImpl ?? fetch;
+    this.store = options.store ?? new StateStore();
+    this.authToken = options.authToken?.trim() || void 0;
+  }
+  async status() {
+    return this.request(
+      "/health",
+      { method: "GET" },
+      _DaemonClient.READ_TIMEOUT_MS,
+      true
+    );
+  }
+  async health() {
+    return this.request(
+      "/healthz",
+      { method: "GET" },
+      _DaemonClient.READ_TIMEOUT_MS,
+      true
+    );
+  }
+  async recentTasks() {
+    return this.request(
+      "/tasks",
+      { method: "GET" },
+      _DaemonClient.READ_TIMEOUT_MS
+    );
+  }
+  async send(request) {
+    return this.request(
+      "/send",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          text: request.text,
+          ...request.userId ? { userId: request.userId } : {},
+          ...request.threadId ? { threadId: request.threadId } : {}
+        })
+      },
+      _DaemonClient.SEND_TIMEOUT_MS
+    );
+  }
+  async request(pathname, init, timeoutMs, returnErrorBody = false) {
+    const authToken = this.authToken ?? (this.authToken = this.store.getOrCreateDaemonAuthToken());
+    const headers = new Headers(init.headers);
+    headers.set("Authorization", `Bearer ${authToken}`);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await this.fetchImpl(new URL(pathname, this.baseUrl), {
+        ...init,
+        headers,
+        signal: controller.signal
+      });
+      const text = await response.text();
+      let data;
+      try {
+        data = JSON.parse(text);
+      } catch {
+        data = { ok: false, error: text || `HTTP ${response.status}` };
+      }
+      if (!response.ok && !returnErrorBody) {
+        const error = data && typeof data === "object" && "error" in data ? String(data.error) : `HTTP ${response.status}`;
+        throw new Error(error);
+      }
+      return data;
+    } catch (error) {
+      if (error instanceof Error && error.name === "AbortError") {
+        throw new Error("CodeLink daemon \u8BF7\u6C42\u8D85\u65F6");
+      }
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+};
+
+// src/doctor.ts
+var import_node_fs4 = __toESM(require("node:fs"), 1);
+var import_node_path4 = __toESM(require("node:path"), 1);
+var import_node_crypto5 = require("node:crypto");
+function createDoctorReport(params) {
+  const status = asRecord(params.daemonStatus);
+  const receipt = params.store.loadInstallReceipt();
+  const runtimeReady = validateRuntime(params.store.path("runtime"));
+  const plugin = validatePlugin(receipt);
+  const pluginInstalled = plugin.installed;
+  const mcpBundleReady = plugin.mcpReady;
+  const daemonHealthy = status?.ok === true;
+  const wechatLoggedIn = Boolean(params.store.loadSession()) && status?.sessionExpired !== true;
+  const defaultRecipientReady = status?.hasDefaultContextToken === true;
+  const currentConversationBound = typeof status?.activeThreadId === "string" && status.activeThreadId.length > 0;
+  return {
+    ok: runtimeReady && pluginInstalled && mcpBundleReady && daemonHealthy && wechatLoggedIn,
+    runtimeReady,
+    pluginInstalled,
+    mcpBundleReady,
+    daemonHealthy,
+    wechatLoggedIn,
+    defaultRecipientReady,
+    currentConversationBound,
+    newTaskRequired: true
+  };
+}
+function validateRuntime(runtimeDir) {
+  try {
+    const manifest = asRecord(
+      JSON.parse(
+        import_node_fs4.default.readFileSync(import_node_path4.default.join(runtimeDir, "runtime-manifest.json"), "utf8")
+      )
+    );
+    const files = asRecord(manifest?.files);
+    if (manifest?.schemaVersion !== 1 || !files) return false;
+    for (const name of ["cli.cjs", "mcp.js"]) {
+      const expected = files[name];
+      if (typeof expected !== "string") return false;
+      const actual = (0, import_node_crypto5.createHash)("sha256").update(import_node_fs4.default.readFileSync(import_node_path4.default.join(runtimeDir, name))).digest("hex");
+      if (actual !== expected) return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+function validatePlugin(receipt) {
+  if (receipt?.schemaVersion !== 1 || receipt.pluginInstalled !== true || receipt.mcpBundleReady !== true || typeof receipt.pluginRoot !== "string" || typeof receipt.pluginVersion !== "string" || typeof receipt.mcpSha256 !== "string") {
+    return { installed: false, mcpReady: false };
+  }
+  try {
+    const manifest = asRecord(
+      JSON.parse(
+        import_node_fs4.default.readFileSync(
+          import_node_path4.default.join(receipt.pluginRoot, ".codex-plugin", "plugin.json"),
+          "utf8"
+        )
+      )
+    );
+    const installed = manifest?.name === "codelink" && manifest.version === receipt.pluginVersion;
+    if (!installed) return { installed: false, mcpReady: false };
+    const mcp = asRecord(
+      JSON.parse(
+        import_node_fs4.default.readFileSync(import_node_path4.default.join(receipt.pluginRoot, ".mcp.json"), "utf8")
+      )
+    );
+    const servers = asRecord(mcp?.mcpServers);
+    const codelink = asRecord(servers?.codelink);
+    const args = Array.isArray(codelink?.args) ? codelink.args : [];
+    const mcpPath = import_node_path4.default.join(receipt.pluginRoot, "dist", "mcp.js");
+    const mcpHash = (0, import_node_crypto5.createHash)("sha256").update(import_node_fs4.default.readFileSync(mcpPath)).digest("hex");
+    const mcpReady = codelink?.command === "node" && args.includes("./dist/mcp.js") && mcpHash === receipt.mcpSha256;
+    return { installed: true, mcpReady };
+  } catch {
+    return { installed: false, mcpReady: false };
+  }
+}
+function asRecord(value) {
+  return value && typeof value === "object" ? value : null;
+}
+
+// src/openclaw-state.ts
+var import_node_fs5 = __toESM(require("node:fs"), 1);
+var import_node_os2 = __toESM(require("node:os"), 1);
+var import_node_path5 = __toESM(require("node:path"), 1);
+function exportOpenClawState(params) {
+  const stateDir = import_node_path5.default.resolve(
+    params.stateDir || process.env.OPENCLAW_STATE_DIR || import_node_path5.default.join(import_node_os2.default.homedir(), ".openclaw")
+  );
+  const accountsDir = import_node_path5.default.join(stateDir, "openclaw-weixin", "accounts");
+  const accountId = params.accountId || selectAccountId(stateDir, accountsDir);
+  const accountPath = import_node_path5.default.join(accountsDir, `${accountId}.json`);
+  const account = readObject(accountPath);
+  const token = stringValue(account.token);
+  if (!token) throw new Error(`OpenClaw \u8D26\u53F7\u6587\u4EF6\u7F3A\u5C11 token\uFF1A${accountPath}`);
+  const sync = readObject(
+    import_node_path5.default.join(accountsDir, `${accountId}.sync.json`),
+    true
+  );
+  const contextTokens = readStringMap(
+    import_node_path5.default.join(accountsDir, `${accountId}.context-tokens.json`)
+  );
+  const openclawConfig = readObject(import_node_path5.default.join(stateDir, "openclaw.json"), true);
+  const channel = readChannelConfig(openclawConfig, accountId);
+  const bundle = {
+    schemaVersion: 1,
+    exportedAt: (/* @__PURE__ */ new Date()).toISOString(),
+    source: "openclaw-weixin",
+    account: {
+      accountId,
+      token,
+      baseUrl: stringValue(account.baseUrl) || stringValue(channel.account.baseUrl) || stringValue(channel.section.baseUrl) || "https://ilinkai.weixin.qq.com",
+      ...stringValue(account.userId) ? { userId: stringValue(account.userId) } : {},
+      ...stringValue(account.savedAt) ? { savedAt: stringValue(account.savedAt) } : {}
+    },
+    ...stringValue(sync.get_updates_buf) ? { getUpdatesBuf: stringValue(sync.get_updates_buf) } : {},
+    ...Object.keys(contextTokens).length ? { contextTokens } : {},
+    ...stringValue(channel.account.routeTag) || stringValue(channel.section.routeTag) ? {
+      routeTag: stringValue(channel.account.routeTag) || stringValue(channel.section.routeTag)
+    } : {},
+    ...stringValue(channel.account.botAgent) || stringValue(channel.section.botAgent) ? {
+      botAgent: stringValue(channel.account.botAgent) || stringValue(channel.section.botAgent)
+    } : {}
+  };
+  const outputPath = import_node_path5.default.resolve(params.outputPath);
+  import_node_fs5.default.mkdirSync(import_node_path5.default.dirname(outputPath), { recursive: true, mode: 448 });
+  import_node_fs5.default.writeFileSync(outputPath, `${JSON.stringify(bundle, null, 2)}
+`, {
+    encoding: "utf8",
+    mode: 384
+  });
+  try {
+    import_node_fs5.default.chmodSync(outputPath, 384);
+  } catch {
+  }
+  return bundle;
+}
+function importOpenClawState(params) {
+  const inputPath = import_node_path5.default.resolve(params.inputPath);
+  const bundle = JSON.parse(
+    import_node_fs5.default.readFileSync(inputPath, "utf8")
+  );
+  validateBundle(bundle);
+  const session = {
+    accountId: normalizeAccountId(bundle.account.accountId),
+    token: bundle.account.token,
+    baseUrl: normalizeBaseUrl(bundle.account.baseUrl),
+    ...bundle.account.userId ? { userId: bundle.account.userId } : {},
+    savedAt: bundle.account.savedAt || (/* @__PURE__ */ new Date()).toISOString()
+  };
+  params.store.saveSession(session);
+  if (bundle.getUpdatesBuf !== void 0) {
+    params.store.saveSyncCursor(bundle.getUpdatesBuf);
+  }
+  const contextTokensImported = params.store.importContextTokens(
+    bundle.contextTokens ?? {}
+  );
+  const config = params.store.loadConfig();
+  if (bundle.routeTag) config.weixin.routeTag = bundle.routeTag;
+  if (bundle.botAgent) config.weixin.botAgent = bundle.botAgent;
+  if (session.userId && !config.security.allowedUserIds.includes(session.userId)) {
+    config.security.allowedUserIds.push(session.userId);
+  }
+  params.store.saveConfig(config);
+  return {
+    accountId: session.accountId,
+    ...session.userId ? { userId: session.userId } : {},
+    tokenPresent: true,
+    syncCursorImported: bundle.getUpdatesBuf !== void 0,
+    contextTokensImported,
+    routeTagImported: Boolean(bundle.routeTag),
+    sourceFile: inputPath
+  };
+}
+function selectAccountId(stateDir, accountsDir) {
+  const indexPath = import_node_path5.default.join(stateDir, "openclaw-weixin", "accounts.json");
+  try {
+    const index = JSON.parse(import_node_fs5.default.readFileSync(indexPath, "utf8"));
+    if (Array.isArray(index)) {
+      const ids = index.filter(
+        (value) => typeof value === "string" && value.trim().length > 0
+      );
+      if (ids.length) return ids[ids.length - 1];
+    }
+  } catch {
+  }
+  let candidates = [];
+  try {
+    candidates = import_node_fs5.default.readdirSync(accountsDir).filter(
+      (name) => name.endsWith(".json") && !name.endsWith(".sync.json") && !name.endsWith(".context-tokens.json")
+    ).sort(
+      (a, b) => import_node_fs5.default.statSync(import_node_path5.default.join(accountsDir, a)).mtimeMs - import_node_fs5.default.statSync(import_node_path5.default.join(accountsDir, b)).mtimeMs
+    );
+  } catch {
+  }
+  if (!candidates.length) {
+    throw new Error(`\u672A\u627E\u5230 OpenClaw \u5FAE\u4FE1\u8D26\u53F7\u72B6\u6001\uFF1A${accountsDir}`);
+  }
+  return candidates[candidates.length - 1].replace(/\.json$/, "");
+}
+function readChannelConfig(config, accountId) {
+  const channels = objectValue(config.channels);
+  const section = objectValue(channels["openclaw-weixin"]);
+  const accounts = objectValue(section.accounts);
+  return { section, account: objectValue(accounts[accountId]) };
+}
+function readObject(filePath, optional = false) {
+  try {
+    return objectValue(JSON.parse(import_node_fs5.default.readFileSync(filePath, "utf8")));
+  } catch (error) {
+    if (optional) return {};
+    throw new Error(`\u65E0\u6CD5\u8BFB\u53D6 ${filePath}: ${String(error)}`);
+  }
+}
+function readStringMap(filePath) {
+  const value = readObject(filePath, true);
+  return Object.fromEntries(
+    Object.entries(value).filter(
+      (entry) => typeof entry[1] === "string" && entry[1].length > 0
+    )
+  );
+}
+function objectValue(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+function stringValue(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+function validateBundle(bundle) {
+  if (bundle.schemaVersion !== 1 || bundle.source !== "openclaw-weixin") {
+    throw new Error("\u4E0D\u652F\u6301\u7684 OpenClaw \u5FAE\u4FE1\u72B6\u6001\u5305\u683C\u5F0F");
+  }
+  if (!bundle.account?.accountId || !bundle.account?.token || !bundle.account?.baseUrl) {
+    throw new Error("\u72B6\u6001\u5305\u7F3A\u5C11 accountId\u3001token \u6216 baseUrl");
+  }
+}
+function normalizeAccountId(value) {
+  return value.trim().replaceAll("@", "-").replaceAll(".", "-").replace(/[^A-Za-z0-9_-]/g, "-");
+}
+function normalizeBaseUrl(value) {
+  const trimmed = value.trim();
+  if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+    return trimmed;
+  }
+  return `https://${trimmed}`;
 }
 
 // src/weixin/login.ts
@@ -8482,7 +8746,9 @@ async function main() {
       return;
     }
     case "status": {
-      printJson(await new DaemonClient().status());
+      const status = await new DaemonClient({ store }).status();
+      printJson(status);
+      if (!daemonStatusIsReady(status)) process.exitCode = 1;
       return;
     }
     case "doctor": {
@@ -8495,7 +8761,7 @@ async function main() {
       return;
     }
     case "tasks": {
-      printJson(await new DaemonClient().recentTasks());
+      printJson(await new DaemonClient({ store }).recentTasks());
       return;
     }
     case "task": {
@@ -8504,7 +8770,7 @@ async function main() {
       const runner = new CodexTaskRunner(config.codex, store);
       printJson(
         await runner.runTask({
-          messageId: `local-${(0, import_node_crypto4.randomUUID)()}`,
+          messageId: `local-${(0, import_node_crypto6.randomUUID)()}`,
           fromUserId: "local-cli",
           prompt,
           startNew: true
@@ -8515,7 +8781,7 @@ async function main() {
     case "send": {
       const text = args.join(" ").trim();
       if (!text) throw new Error("\u7528\u6CD5\uFF1Acodelink send <\u6D88\u606F\u6587\u5B57>");
-      printJson(await new DaemonClient().send({ text }));
+      printJson(await new DaemonClient({ store }).send({ text }));
       return;
     }
     case "state": {
@@ -8523,7 +8789,9 @@ async function main() {
         stateDir: store.dir,
         config: store.path("config.json"),
         session: store.path("weixin-session.json"),
+        daemonAuthToken: store.path("daemon-api-token"),
         syncCursor: store.path("get-updates.json"),
+        processedMessages: store.path("processed-messages.json"),
         contextTokens: store.path("context-tokens.json"),
         conversations: store.path("conversations.json"),
         tasks: store.path("tasks.json"),
@@ -8580,6 +8848,11 @@ function ensureConfig(store) {
 function printJson(value) {
   process.stdout.write(`${JSON.stringify(value, null, 2)}
 `);
+}
+function daemonStatusIsReady(value) {
+  return Boolean(
+    value && typeof value === "object" && "ok" in value && value.ok === true
+  );
 }
 function helpText() {
   return `CodeLink 0.1.0

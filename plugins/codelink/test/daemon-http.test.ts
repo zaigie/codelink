@@ -134,6 +134,44 @@ describe("daemon HTTP runtime boundary", () => {
       await daemon.stop();
     }
   });
+
+  it("serves the identifier-free /healthz probe without authentication", async () => {
+    const getUpdates = vi
+      .fn<() => Promise<GetUpdatesResponse>>()
+      .mockResolvedValueOnce({
+        ret: 0,
+        get_updates_buf: "ready-cursor",
+        msgs: [],
+      });
+    const { daemon, session } = daemonFixture({ getUpdates });
+    await listenForHttpTests(daemon);
+    const baseUrl = listeningUrl(daemon);
+
+    try {
+      const notReady = await fetch(new URL("/healthz", baseUrl));
+      expect(notReady.status).toBe(503);
+      expect(await notReady.json()).toEqual({
+        service: "codelink",
+        ok: false,
+        degraded: expect.any(Boolean),
+        sessionExpired: expect.any(Boolean),
+      });
+
+      await expect(daemon.pollOnce(session, "")).resolves.toBe("ready-cursor");
+      const ready = await fetch(new URL("/healthz", baseUrl));
+      expect(ready.status).toBe(200);
+      const body = (await ready.json()) as Record<string, unknown>;
+      expect(body).toEqual({
+        service: "codelink",
+        ok: true,
+        degraded: false,
+        sessionExpired: false,
+      });
+      expect(JSON.stringify(body)).not.toMatch(/owner|thread|token/i);
+    } finally {
+      await daemon.stop();
+    }
+  });
 });
 
 function daemonFixture(params: {
